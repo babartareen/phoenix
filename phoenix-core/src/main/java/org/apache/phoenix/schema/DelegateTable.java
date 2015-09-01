@@ -20,6 +20,7 @@ package org.apache.phoenix.schema;
 import java.util.List;
 
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.jdbc.PhoenixConnection;
@@ -104,6 +105,11 @@ public class DelegateTable implements PTable {
     @Override
     public PRow newRow(KeyValueBuilder builder, long ts, ImmutableBytesWritable key, byte[]... values) {
         return delegate.newRow(builder, ts, key, values);
+    }
+
+    @Override
+    public PRow newRow(KeyValueBuilder builder, long ts, Expression compare, ImmutableBytesWritable key, byte[]... values) {
+        return delegate.newRow(builder, ts, compare, key, values);
     }
 
     @Override

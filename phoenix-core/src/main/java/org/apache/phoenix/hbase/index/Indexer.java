@@ -20,7 +20,9 @@ package org.apache.phoenix.hbase.index;
 import static org.apache.phoenix.hbase.index.util.IndexManagementUtil.rethrowIndexingException;
 
 import java.io.IOException;
+import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -31,26 +33,34 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellScanner;
+import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.CheckedPut;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
+import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.regionserver.InternalScanner;
 import org.apache.hadoop.hbase.regionserver.KeyValueScanner;
 import org.apache.hadoop.hbase.regionserver.MiniBatchOperationInProgress;
+import org.apache.hadoop.hbase.regionserver.OperationStatus;
 import org.apache.hadoop.hbase.regionserver.ScanType;
 import org.apache.hadoop.hbase.regionserver.Store;
 import org.apache.hadoop.hbase.regionserver.wal.HLogKey;
 import org.apache.hadoop.hbase.regionserver.wal.WALEdit;
 import org.apache.hadoop.hbase.util.Pair;
+import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.hbase.index.builder.IndexBuildManager;
 import org.apache.phoenix.hbase.index.builder.IndexBuilder;
 import org.apache.phoenix.hbase.index.table.HTableInterfaceReference;
@@ -63,6 +73,7 @@ import org.apache.phoenix.hbase.index.write.IndexWriter;
 import org.apache.phoenix.hbase.index.write.recovery.PerRegionIndexWriteCache;
 import org.apache.phoenix.hbase.index.write.recovery.StoreFailuresInCachePolicy;
 import org.apache.phoenix.hbase.index.write.recovery.TrackingParallelWriterIndexCommitter;
+import org.apache.phoenix.schema.tuple.MultiKeyValueTuple;
 import org.apache.phoenix.trace.TracingUtils;
 import org.apache.phoenix.trace.util.NullSpan;
 import org.apache.htrace.Span;
@@ -192,6 +203,34 @@ public class Indexer extends BaseRegionObserver {
     this.recoveryWriter.stop(msg);
   }
 
+    private static List<Cell> getUpdatedRowCells(List<Cell> rowCells, Put put) throws IOException {
+        List<Cell> mergedRowCells = rowCells;
+        if (rowCells == null) {
+            mergedRowCells = new ArrayList<>();
+        }
+
+        CellScanner cellScanner = put.cellScanner();
+        while (cellScanner.advance()) {
+            Cell putCell = cellScanner.current();
+            int cellIndex = 0;
+            for (int idx=0; idx<mergedRowCells.size(); idx++) {
+                Cell existingCell = mergedRowCells.get(idx);
+                if (Arrays.equals(CellUtil.cloneFamily(putCell), CellUtil.cloneFamily(existingCell))
+                    && Arrays.equals(CellUtil.cloneQualifier(putCell), CellUtil.cloneQualifier(existingCell))) {
+                    cellIndex = idx;
+                    break;
+                }
+            }
+            if (cellIndex < mergedRowCells.size()) {
+                mergedRowCells.set(cellIndex, putCell);
+            } else {
+                mergedRowCells.add(putCell);
+            }
+        }
+
+        return mergedRowCells;
+    }
+
   @Override
   public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c,
       MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
@@ -222,9 +261,49 @@ public class Indexer extends BaseRegionObserver {
           defaultDurability = (defaultDurability == Durability.USE_DEFAULT) ? 
                   Durability.SYNC_WAL : defaultDurability;
       }
+
+      HashMap<ImmutableBytesPtr, List<Cell>> rowCellsMap = new HashMap<>();
       Durability durability = Durability.SKIP_WAL;
       for (int i = 0; i < miniBatchOp.size(); i++) {
           Mutation m = miniBatchOp.getOperation(i);
+          if (m instanceof Put) {
+              Put put = (Put) m;
+              ImmutableBytesPtr rowPtr = new ImmutableBytesPtr(put.getRow());
+              if (CheckedPut.isCheckedPut(put)) {
+                  CheckedPut checkedPut = new CheckedPut(put);
+
+                  Expression compare = checkedPut.getCompare();
+
+                  List<Cell> rowCells = rowCellsMap.get(rowPtr);
+                  if (rowCells == null) {
+                      Result result = c.getEnvironment().getRegion().get(new Get(put.getRow()));
+                      // Make an editable list of row cells
+                      rowCells = result.listCells();
+                      if (rowCells == null) {
+                          rowCells = new ArrayList<>();
+                      } else {
+                          rowCells = new ArrayList<>(result.listCells());
+                      }
+                  }
+
+                  MultiKeyValueTuple tuple = new MultiKeyValueTuple(rowCells);
+                  ImmutableBytesWritable ptr = new ImmutableBytesWritable();
+                  boolean evalStatus = compare.evaluate(tuple, ptr);
+                  boolean compareSuccess = false;
+                  if (evalStatus == true) {
+                      compareSuccess = ptr.get()[ptr.getOffset()] == 1;
+                  }
+                  if (!compareSuccess) {
+                      // Mark this as SUCCESS to skip further processing
+                      miniBatchOp.setOperationStatus(i, new OperationStatus(HConstants.OperationStatusCode.SUCCESS));
+                      continue;
+                  }
+
+                  List<Cell> mergedRowCells = getUpdatedRowCells(rowCells, put);
+                  rowCellsMap.put(rowPtr, mergedRowCells);
+              }
+          }
+
           // skip this mutation if we aren't enabling indexing
           // unfortunately, we really should ask if the raw mutation (rather than the combined mutation)
           // should be indexed, which means we need to expose another method on the builder. Such is the

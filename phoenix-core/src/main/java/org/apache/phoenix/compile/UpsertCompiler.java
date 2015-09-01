@@ -46,6 +46,7 @@ import org.apache.phoenix.execute.MutationState.RowMutationState;
 import org.apache.phoenix.expression.Determinism;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.LiteralExpression;
+import org.apache.phoenix.expression.RowKeyColumnExpression;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.index.IndexMetaDataCacheClient;
 import org.apache.phoenix.index.PhoenixIndexCodec;
@@ -96,7 +97,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
 public class UpsertCompiler {
-    private static void setValues(byte[][] values, int[] pkSlotIndex, int[] columnIndexes, PTable table, Map<ImmutableBytesPtr,RowMutationState> mutation, PhoenixStatement statement) {
+    private static void setValues(byte[][] values, int[] pkSlotIndex, int[] columnIndexes, PTable table, Map<ImmutableBytesPtr,RowMutationState> mutation, PhoenixStatement statement, Expression compare) {
         Map<PColumn,byte[]> columnValues = Maps.newHashMapWithExpectedSize(columnIndexes.length);
         byte[][] pkValues = new byte[table.getPKColumns().size()][];
         // If the table uses salting, the first byte is the salting byte, set to an empty array
@@ -115,7 +116,7 @@ public class UpsertCompiler {
         }
         ImmutableBytesPtr ptr = new ImmutableBytesPtr();
         table.newKey(ptr, pkValues);
-        mutation.put(ptr, new RowMutationState(columnValues, statement.getConnection().getStatementExecutionCounter()));
+        mutation.put(ptr, new RowMutationState(columnValues, statement.getConnection().getStatementExecutionCounter(), compare));
     }
 
     private static MutationState upsertSelect(StatementContext childContext, TableRef tableRef, RowProjector projector,
@@ -156,7 +157,7 @@ public class UpsertCompiler {
                             table.rowKeyOrderOptimizable());
                     values[i] = ByteUtil.copyKeyBytesIfNecessary(ptr);
                 }
-                setValues(values, pkSlotIndexes, columnIndexes, table, mutation, statement);
+                setValues(values, pkSlotIndexes, columnIndexes, table, mutation, statement, null);
                 rowCount++;
                 // Commit a batch if auto commit is true and we're at our batch size
                 if (isAutoCommit && rowCount % batchSize == 0) {
@@ -713,6 +714,23 @@ public class UpsertCompiler {
             };
         }
 
+        Expression compareClause = null;
+        if (upsert.getCompareNode() != null) {
+            upsert = UpsertNormalizer.normalize(upsert);
+            final StatementContext context = new StatementContext(statement, resolver, new Scan(), new SequenceManager(statement));
+            ExpressionCompiler compiler = new ExpressionCompiler(context);
+            compareClause = upsert.getCompareNode().accept(compiler);
+
+            if (compareClause.getChildren().size() > 0) {
+                Expression lhs = compareClause.getChildren().get(0);
+                if (lhs instanceof RowKeyColumnExpression) {
+                    throw new SQLException("Use of row key in compare clause in currently not supported");
+                }
+            } else if (compareClause instanceof LiteralExpression
+                       && ((LiteralExpression)compareClause).getValue() == false) {
+                throw new SQLException("The upsert statement will always fail. Please ensure that the row key is not being used in the compare clause");
+            }
+        }
             
         ////////////////////////////////////////////////////////////////////
         // UPSERT VALUES
@@ -751,6 +769,13 @@ public class UpsertCompiler {
             nodeIndex++;
         }
         return new MutationPlan() {
+
+            private Expression compare = null;
+
+            private MutationPlan init(Expression compare) {
+                this.compare = compare;
+                return this;
+            }
 
             @Override
             public PhoenixConnection getConnection() {
@@ -817,8 +842,9 @@ public class UpsertCompiler {
                     }
                 }
                 Map<ImmutableBytesPtr, RowMutationState> mutation = Maps.newHashMapWithExpectedSize(1);
-                setValues(values, pkSlotIndexes, columnIndexes, table, mutation, statement);
-                return new MutationState(tableRef, mutation, 0, maxSize, connection);
+
+                setValues(values, pkSlotIndexes, columnIndexes, table, mutation, statement, this.compare);
+                return new MutationState(tableRef, mutation, 0, maxSize, compare, connection);
             }
 
             @Override
@@ -831,7 +857,7 @@ public class UpsertCompiler {
                 return new ExplainPlan(planSteps);
             }
 
-        };
+        }.init(compareClause);
     }
     
     private TableRef adjustTimestampToMinOfSameTable(TableRef upsertRef, List<TableRef> selectRefs) {

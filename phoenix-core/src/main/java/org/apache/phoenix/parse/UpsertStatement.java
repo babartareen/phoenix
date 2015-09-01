@@ -26,15 +26,17 @@ public class UpsertStatement extends DMLStatement {
     private final List<ParseNode> values;
     private final SelectStatement select;
     private final HintNode hint;
+    private final ParseNode compareNode;
 
     public UpsertStatement(NamedTableNode table, HintNode hint, List<ColumnName> columns,
             List<ParseNode> values, SelectStatement select, int bindCount,
-            Map<String, UDFParseNode> udfParseNodes) {
+            Map<String, UDFParseNode> udfParseNodes, ParseNode compareNode) {
         super(table, bindCount, udfParseNodes);
         this.columns = columns == null ? Collections.<ColumnName>emptyList() : columns;
         this.values = values;
         this.select = select;
         this.hint = hint == null ? HintNode.EMPTY_HINT_NODE : hint;
+        this.compareNode = compareNode;
     }
 
     public List<ColumnName> getColumns() {
@@ -51,5 +53,14 @@ public class UpsertStatement extends DMLStatement {
 
     public HintNode getHint() {
         return hint;
+    }
+
+    public ParseNode getCompareNode() {
+        return compareNode;
+    }
+
+    public UpsertStatement updateCompare(ParseNode compare) {
+        return new UpsertStatement(this.getTable(), this.hint, this.columns, this.values,
+                                   this.select, this.getBindCount(), this.getUdfParseNodes(), compare);
     }
 }

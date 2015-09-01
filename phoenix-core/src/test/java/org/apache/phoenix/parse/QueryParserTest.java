@@ -625,6 +625,23 @@ public class QueryParserTest {
     }
 
     @Test
+    public void testValidUpsertCompare() throws Exception {
+        String sql =
+            "upsert into TestTable values (1, 2, 3)\n" +
+            "compare (ind.string_value in ('a', 'b', 'c', 'd'))\n" +
+            "and rownum <= ( 3 + 1 )\n" +
+            "and (ind.organization_id = '000000000000000')\n" +
+            "and (ind.key_prefix = '00T')\n" +
+            "and (ind.deleted = '0')\n" +
+            "and (ind.index_num = 1)\n" +
+            "or index_num = 5\n" +
+            "and not ind.organization_id = 5\n" +
+            "or ind.key_prefix is null\n" +
+            "or organization_name like 'abc%'";
+        parseQuery(sql);
+    }
+
+    @Test
     public void testHavingWithNot() throws Exception {
         String sql = (
                 (

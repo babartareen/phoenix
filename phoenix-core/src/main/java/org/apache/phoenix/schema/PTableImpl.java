@@ -33,6 +33,7 @@ import java.util.TreeMap;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.client.CheckedPut;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Durability;
 import org.apache.hadoop.hbase.client.Mutation;
@@ -44,6 +45,7 @@ import org.apache.phoenix.coprocessor.generated.PGuidePostsProtos;
 import org.apache.phoenix.coprocessor.generated.PGuidePostsProtos.PGuidePosts;
 import org.apache.phoenix.coprocessor.generated.PTableProtos;
 import org.apache.phoenix.exception.DataExceedsCapacityException;
+import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.index.IndexMaintainer;
@@ -603,8 +605,8 @@ public class PTableImpl implements PTable {
         }
     }
 
-    private PRow newRow(KeyValueBuilder builder, long ts, ImmutableBytesWritable key, int i, byte[]... values) {
-        PRow row = new PRowImpl(builder, key, ts, getBucketNum());
+    private PRow newRow(KeyValueBuilder builder, long ts, Expression compare, ImmutableBytesWritable key, int i, byte[]... values) {
+        PRow row = new PRowImpl(builder, key, ts, compare, getBucketNum());
         if (i < values.length) {
             for (PColumnFamily family : getColumnFamilies()) {
                 for (PColumn column : family.getColumns()) {
@@ -620,7 +622,12 @@ public class PTableImpl implements PTable {
     @Override
     public PRow newRow(KeyValueBuilder builder, long ts, ImmutableBytesWritable key,
             byte[]... values) {
-        return newRow(builder, ts, key, 0, values);
+        return newRow(builder, ts, null, key, 0, values);
+    }
+
+    @Override
+    public PRow newRow(KeyValueBuilder builder, long ts, Expression compare, ImmutableBytesWritable key, byte[]... values) {
+        return newRow(builder, ts, compare, key, 0, values);
     }
 
     @Override
@@ -668,9 +675,12 @@ public class PTableImpl implements PTable {
         private Delete deleteRow;
         private final long ts;
 
-        public PRowImpl(KeyValueBuilder kvBuilder, ImmutableBytesWritable key, long ts, Integer bucketNum) {
+        private Expression compare;
+
+        public PRowImpl(KeyValueBuilder kvBuilder, ImmutableBytesWritable key, long ts, Expression compare, Integer bucketNum) {
             this.kvBuilder = kvBuilder;
             this.ts = ts;
+            this.compare = compare;
             if (bucketNum != null) {
                 this.key = SaltingUtil.getSaltedKey(key, bucketNum);
                 this.keyPtr = new ImmutableBytesPtr(this.key);
@@ -684,7 +694,11 @@ public class PTableImpl implements PTable {
 
         @SuppressWarnings("deprecation")
         private void newMutations() {
-            this.setValues = new Put(this.key);
+            if (this.compare == null) {
+                this.setValues = new Put(this.key);
+            } else {
+                this.setValues = new CheckedPut(this.key, compare);
+            }
             this.unsetValues = new Delete(this.key);
             this.setValues.setWriteToWAL(!isWALDisabled());
             this.unsetValues.setWriteToWAL(!isWALDisabled());

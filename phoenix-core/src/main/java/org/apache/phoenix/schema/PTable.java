@@ -21,6 +21,8 @@ import java.util.List;
 
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.phoenix.expression.ComparisonExpression;
+import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.jdbc.PhoenixConnection;
@@ -233,6 +235,8 @@ public interface PTable extends PMetaDataEntity {
      * constraint
      */
     PRow newRow(KeyValueBuilder builder, long ts, ImmutableBytesWritable key, byte[]... values);
+
+    PRow newRow(KeyValueBuilder builder, long ts, Expression compare, ImmutableBytesWritable key, byte[]... values);
 
     /**
      * Creates a new row for the PK values (from {@link #newKey(ImmutableBytesWritable, byte[][])}

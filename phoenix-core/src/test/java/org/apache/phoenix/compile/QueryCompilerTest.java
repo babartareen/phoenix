@@ -539,6 +539,44 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     }
 
     @Test
+    public void testUpsertCompareRowKey() throws Exception {
+        try {
+            String query = "upsert into ATABLE VALUES (?) COMPARE organization_id='00D300000000XHP'";
+            Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+            Connection conn = DriverManager.getConnection(getUrl(), props);
+            try {
+                PreparedStatement statement = conn.prepareStatement(query);
+                statement.setString(1, "00D300000000XHP");
+                statement.executeUpdate();
+                fail();
+            } finally {
+                conn.close();
+            }
+        } catch (SQLException e) { // TODO: use error codes
+            assertTrue(e.getMessage().contains("Use of row key in compare clause in currently not supported"));
+        }
+    }
+
+    @Test
+    public void testUpsertCompareTypeMismatch() throws Exception {
+        try {
+            String query = "upsert into ATABLE VALUES (?) COMPARE organization_id=5";
+            Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+            Connection conn = DriverManager.getConnection(getUrl(), props);
+            try {
+                PreparedStatement statement = conn.prepareStatement(query);
+                statement.setString(1, "00D300000000XHP");
+                statement.executeUpdate();
+                fail();
+            } finally {
+                conn.close();
+            }
+        } catch (SQLException e) { // TODO: use error codes
+            assertTrue(e.getMessage().contains("Type mismatch"));
+        }
+    }
+
+    @Test
     public void testUpsertMultiByteIntoChar() throws Exception {
         try {
             // Select non agg column in aggregate query

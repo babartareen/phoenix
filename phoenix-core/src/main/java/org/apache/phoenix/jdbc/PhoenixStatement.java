@@ -537,8 +537,8 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
     }
 
     private static class ExecutableUpsertStatement extends UpsertStatement implements CompilableStatement {
-        private ExecutableUpsertStatement(NamedTableNode table, HintNode hintNode, List<ColumnName> columns, List<ParseNode> values, SelectStatement select, int bindCount, Map<String, UDFParseNode> udfParseNodes) {
-            super(table, hintNode, columns, values, select, bindCount, udfParseNodes);
+        private ExecutableUpsertStatement(NamedTableNode table, HintNode hintNode, List<ColumnName> columns, List<ParseNode> values, SelectStatement select, int bindCount, Map<String, UDFParseNode> udfParseNodes, ParseNode compareNode) {
+            super(table, hintNode, columns, values, select, bindCount, udfParseNodes, compareNode);
         }
 
         @SuppressWarnings("unchecked")
@@ -1158,8 +1158,8 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         }
 
         @Override
-        public ExecutableUpsertStatement upsert(NamedTableNode table, HintNode hintNode, List<ColumnName> columns, List<ParseNode> values, SelectStatement select, int bindCount, Map<String, UDFParseNode> udfParseNodes) {
-            return new ExecutableUpsertStatement(table, hintNode, columns, values, select, bindCount, udfParseNodes);
+        public ExecutableUpsertStatement upsert(NamedTableNode table, HintNode hintNode, List<ColumnName> columns, List<ParseNode> values, SelectStatement select, int bindCount, Map<String, UDFParseNode> udfParseNodes, ParseNode compareNode) {
+            return new ExecutableUpsertStatement(table, hintNode, columns, values, select, bindCount, udfParseNodes, compareNode);
         }
         
         @Override

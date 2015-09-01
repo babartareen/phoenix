@@ -125,6 +125,7 @@ tokens
     REPLACE = 'replace';
     LIST = 'list';
     JARS='jars';
+    COMPARE='compare';
 }
 
 
@@ -675,8 +676,8 @@ finally{ contextStack.pop(); }
 upsert_node returns [UpsertStatement ret]
     :   UPSERT (hint=hintClause)? INTO t=from_table_name
         (LPAREN p=upsert_column_refs RPAREN)?
-        ((VALUES LPAREN v=one_or_more_expressions RPAREN) | s=select_node)
-        {ret = factory.upsert(factory.namedTable(null,t,p == null ? null : p.getFirst()), hint, p == null ? null : p.getSecond(), v, s, getBindCount(), new HashMap<String, UDFParseNode>(udfParseNodes)); }
+        ((VALUES LPAREN v=one_or_more_expressions RPAREN (COMPARE compare=compare_expression)?) | s=select_node)
+        {ret = factory.upsert(factory.namedTable(null,t,p == null ? null : p.getFirst()), hint, p == null ? null : p.getSecond(), v, s, getBindCount(), new HashMap<String, UDFParseNode>(udfParseNodes), compare); }
     ;
 
 upsert_column_refs returns [Pair<List<ColumnDef>,List<ColumnName>> ret]
@@ -820,6 +821,46 @@ boolean_expression returns [ParseNode ret]
                       ))
                    |  { $ret = l; } )
     |   EXISTS LPAREN s=subquery_expression RPAREN {$ret = factory.exists(s,false);}
+    ;
+
+// Parse a expression, such as used in a compare clause - either a basic one, or an OR of (Single or AND) expressions
+compare_expression returns [ParseNode ret]
+    :   e=compare_or_expression { $ret = e; }
+    ;
+
+one_or_more_compare_expressions returns [List<ParseNode> ret]
+@init{ret = new ArrayList<ParseNode>(); }
+    :  e = compare_expression {$ret.add(e);}  (COMMA e = compare_expression {$ret.add(e);} )*
+    ;
+
+// A set of OR'd simple expressions
+compare_or_expression returns [ParseNode ret]
+@init{List<ParseNode> l = new ArrayList<ParseNode>(4); }
+    :   i=compare_and_expression {l.add(i);} (OR i=compare_and_expression {l.add(i);})* { $ret = l.size() == 1 ? l.get(0) : factory.or(l); }
+    ;
+
+// A set of AND'd simple expressions
+compare_and_expression returns [ParseNode ret]
+@init{List<ParseNode> l = new ArrayList<ParseNode>(4); }
+    :   i=compare_not_expression {l.add(i);} (AND i=compare_not_expression {l.add(i);})* { $ret = l.size() == 1 ? l.get(0) : factory.and(l); }
+    ;
+
+// NOT or parenthesis
+compare_not_expression returns [ParseNode ret]
+    :   (NOT? compare_boolean_expression ) => n=NOT? e=compare_boolean_expression { $ret = n == null ? e : factory.not(e); }
+    |   n=NOT? LPAREN e=compare_expression RPAREN { $ret = n == null ? e : factory.not(e); }
+    ;
+
+compare_boolean_expression returns [ParseNode ret]
+    :   l=term ((op=comparison_op (r=value_expression) {$ret = factory.comparison(op,l,r); })
+                  |  (IS n=NOT? NULL {$ret = factory.isNull(l,n!=null); } )
+                  |  ( n=NOT? ((LIKE r=value_expression {$ret = factory.like(l,r,n!=null,LikeType.CASE_SENSITIVE); } )
+                      |        (ILIKE r=value_expression {$ret = factory.like(l,r,n!=null,LikeType.CASE_INSENSITIVE); } )
+                      |        (BETWEEN r1=value_expression AND r2=value_expression {$ret = factory.between(l,r1,r2,n!=null); } )
+                      |        ((IN (LPAREN v=one_or_more_compare_expressions RPAREN {List<ParseNode> il = new ArrayList<ParseNode>(v.size() + 1); il.add(l); il.addAll(v); $ret = factory.inList(il,n!=null);})
+                                ))
+                      ))
+                   |  { $ret = l; } )
     ;
 
 bind_expression  returns [BindParseNode ret]

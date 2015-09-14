@@ -212,16 +212,15 @@ public class Indexer extends BaseRegionObserver {
         CellScanner cellScanner = put.cellScanner();
         while (cellScanner.advance()) {
             Cell putCell = cellScanner.current();
-            int cellIndex = 0;
-            for (int idx=0; idx<mergedRowCells.size(); idx++) {
+            int cellIndex = -1;
+            for (int idx = 0; idx < mergedRowCells.size(); idx++) {
                 Cell existingCell = mergedRowCells.get(idx);
-                if (Arrays.equals(CellUtil.cloneFamily(putCell), CellUtil.cloneFamily(existingCell))
-                    && Arrays.equals(CellUtil.cloneQualifier(putCell), CellUtil.cloneQualifier(existingCell))) {
+                if (CellUtil.matchingColumn(putCell, existingCell)) {
                     cellIndex = idx;
                     break;
                 }
             }
-            if (cellIndex < mergedRowCells.size()) {
+            if (cellIndex != -1) {
                 mergedRowCells.set(cellIndex, putCell);
             } else {
                 mergedRowCells.add(putCell);
@@ -290,7 +289,7 @@ public class Indexer extends BaseRegionObserver {
                   ImmutableBytesWritable ptr = new ImmutableBytesWritable();
                   boolean evalStatus = compare.evaluate(tuple, ptr);
                   boolean compareSuccess = false;
-                  if (evalStatus == true) {
+                  if (evalStatus) {
                       compareSuccess = ptr.get()[ptr.getOffset()] == 1;
                   }
                   if (!compareSuccess) {

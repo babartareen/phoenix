@@ -262,7 +262,8 @@ public class UpsertCompareIT extends BaseClientManagedTimeIT {
         }
     }
 
-    @Test public void testCompareMultipleRowUpdates() throws Exception {
+    @Test
+    public void testCompareMultipleRowUpdates() throws Exception {
         long ts = nextTimestamp();
         Properties props = new Properties();
         props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts));
@@ -308,7 +309,8 @@ public class UpsertCompareIT extends BaseClientManagedTimeIT {
         }
     }
 
-    @Test public void testUpsertIfNotExist() throws Exception {
+    @Test
+    public void testUpsertIfNotExist() throws Exception {
         long ts = nextTimestamp();
         Properties props = new Properties();
         props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts));
@@ -336,6 +338,54 @@ public class UpsertCompareIT extends BaseClientManagedTimeIT {
             assertEquals("Key-abc", rs.getString(1));
             assertEquals(null, rs.getString(2));
             assertEquals(null, rs.getString(3));
+            assertEquals(5, rs.getInt(4));
+            assertFalse(rs.next());
+        } finally {
+            closeStmtAndConn(stmt, conn);
+        }
+    }
+
+    @Test
+    public void testUpsertWithPastSCN() throws Exception {
+        long ts = nextTimestamp();
+        Properties props = new Properties();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts+2));
+        Connection conn = null;
+        PreparedStatement stmt = null;
+
+        try {
+            conn = DriverManager.getConnection(getUrl(), props);
+            stmt = conn.prepareStatement("upsert into UpsertCompare (k, value3) values (?, ?) compare value3 = 1");
+            stmt.setString(1, "Key-1");
+            stmt.setInt(2, 5);
+            stmt.executeUpdate();
+            conn.commit();
+        } finally {
+            closeStmtAndConn(stmt, conn);
+        }
+
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts));
+        try {
+            conn = DriverManager.getConnection(getUrl(), props);
+            stmt = conn.prepareStatement("upsert into UpsertCompare (k, value3) values (?, ?) compare value3 = 5");
+            stmt.setString(1, "Key-1");
+            stmt.setInt(2, 11);
+            stmt.executeUpdate();
+            conn.commit();
+        } finally {
+            closeStmtAndConn(stmt, conn);
+        }
+
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 4));
+        try {
+            conn = DriverManager.getConnection(getUrl(), props);
+            stmt = conn.prepareStatement("select * from UpsertCompare where k=?");
+            stmt.setString(1, "Key-1");
+            ResultSet rs = stmt.executeQuery();
+            assertTrue(rs.next());
+            assertEquals("Key-1", rs.getString(1));
+            assertEquals(null, rs.getString(2));
+            assertEquals("Compare Test", rs.getString(3));
             assertEquals(5, rs.getInt(4));
             assertFalse(rs.next());
         } finally {

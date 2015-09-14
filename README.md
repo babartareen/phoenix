@@ -45,10 +45,13 @@ UPSERT INTO User (UserId, Phone) VALUES (1, '3333') COMPARE Phone = '1111';
 ### Limitations
 
 Compare expressions are very similar to where clause expressions. Some of the limitations are
-1) Left hand side of the expression should be a column identifier
-2) Subqueries are not supported
-3) Row key columns can not be used in compare expressions. This is becuase the compare expresions only operates on one row and that row is selected based on the row key value that was passed in the values segment.
+
+1. Left hand side of the expression should be a column identifier
+2. Subqueries are not supported
+3. Row key columns can not be used in compare expressions. This is becuase the compare expresions only operates on one row and that row is selected based on the row key value that was passed in the values segment.
 
 
 Related to:
 [PHOENIX-6](https://issues.apache.org/jira/browse/PHOENIX-6)
+
+Open source contribution by [RootMetrics](http://www.rootmetrics.com)

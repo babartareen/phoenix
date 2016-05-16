@@ -18,14 +18,21 @@
 
 package org.apache.phoenix.pherf;
 
+import org.joda.time.DateTimeZone;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
 
 public class PherfConstants {
-    public enum GeneratePhoenixStats {
+    public static enum GeneratePhoenixStats {
         YES,
         NO
+    }
+    
+    public static enum CompareType {
+        MINIMUM,
+        AVERAGE
     }
 
     private static PherfConstants instance = null;
@@ -34,11 +41,13 @@ public class PherfConstants {
     public static final int DEFAULT_THREAD_POOL_SIZE = 10;
     public static final int DEFAULT_BATCH_SIZE = 1000;
     public static final String DEFAULT_DATE_PATTERN = "yyyy-MM-dd HH:mm:ss.SSS";
+    public static final DateTimeZone DEFAULT_TIME_ZONE = DateTimeZone.UTC;
     public static final String RESOURCE_SCENARIO = "/scenario";
     public static final String
             SCENARIO_ROOT_PATTERN =
-            ".*" + PherfConstants.RESOURCE_SCENARIO.substring(1) + ".*";
+            		".*" + PherfConstants.RESOURCE_SCENARIO.substring(1) + ".*" + PherfConstants.RESOURCE_SCENARIO.substring(1) + ".*";
     public static final String SCHEMA_ROOT_PATTERN = ".*";
+    public static final String TEST_SCENARIO_ROOT_PATTERN = ".*" + "test" + "_" + PherfConstants.RESOURCE_SCENARIO.substring(1);
     public static final String PHERF_PROPERTIES = "pherf.properties";
 
     public static final String EXPORT_DIR = "CSV_EXPORT";
@@ -78,12 +87,20 @@ public class PherfConstants {
         return instance;
     }
 
+    /**
+     * Get a {@link Properties} object based on the file name
+     * @param fileName      Name of the file
+     * @param getDefault    True if you want to use the properties that may have been loaded into
+     *                      the instance. use false if you want to reload the passed file.
+     * @return {@link Properties}
+     * @throws Exception
+     */
     public Properties getProperties(final String fileName, boolean getDefault) throws Exception {
 
         if (instanceProperties == null) {
             instanceProperties = loadProperties(fileName);
         } else {
-            return getDefault ? loadProperties(fileName) : instanceProperties;
+            return getDefault ? instanceProperties : loadProperties(fileName);
         }
 
         return instanceProperties;

@@ -21,6 +21,7 @@ import java.sql.SQLException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.phoenix.compile.QueryPlan;
 import org.apache.phoenix.compile.StatementContext;
 import org.apache.phoenix.schema.PTable;
 
@@ -33,8 +34,8 @@ public class MockParallelIteratorFactory implements ParallelIteratorFactory {
     
     @Override
     public PeekingResultIterator newIterator(StatementContext context, ResultIterator scanner, Scan scan,
-            String physicalTableName) throws SQLException {
-        return new MockTableResultIterator(String.valueOf(counter.incrementAndGet()), table);
+            String physicalTableName, QueryPlan plan) throws SQLException {
+        return new MockResultIterator(String.valueOf(counter.incrementAndGet()), table);
     }
     
     public void setTable(PTable table) {

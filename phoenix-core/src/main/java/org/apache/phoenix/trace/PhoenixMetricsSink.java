@@ -42,6 +42,7 @@ import org.apache.hadoop.metrics2.AbstractMetric;
 import org.apache.hadoop.metrics2.MetricsRecord;
 import org.apache.hadoop.metrics2.MetricsSink;
 import org.apache.hadoop.metrics2.MetricsTag;
+import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.metrics.MetricInfo;
 import org.apache.phoenix.metrics.Metrics;
 import org.apache.phoenix.query.QueryServices;
@@ -118,7 +119,7 @@ public class PhoenixMetricsSink implements MetricsSink {
                 props.setProperty(QueryServices.TRACING_FREQ_ATTRIB,
                         Tracing.Frequency.NEVER.getKey());
                 org.apache.hadoop.conf.Configuration conf = HBaseConfiguration.create();
-                Connection conn = QueryUtil.getConnection(props, conf);
+                Connection conn = QueryUtil.getConnectionOnServer(props, conf);
                 // enable bulk loading when we have enough data
                 conn.setAutoCommit(true);
 
@@ -175,7 +176,13 @@ public class PhoenixMetricsSink implements MetricsSink {
                         TAG_COUNT + " smallint, " +
                         ANNOTATION_COUNT + " smallint" +
                         "  CONSTRAINT pk PRIMARY KEY (" + TRACE.columnName + ", "
-                        + PARENT.columnName + ", " + SPAN.columnName + "))\n";
+                        + PARENT.columnName + ", " + SPAN.columnName + "))\n" +
+                        // We have a config parameter that can be set so that tables are
+                        // transactional by default. If that's set, we still don't want these system
+                        // tables created as transactional tables, make these table non
+                        // transactional
+                        PhoenixDatabaseMetaData.TRANSACTIONAL + "=" + Boolean.FALSE;
+;
         PreparedStatement stmt = conn.prepareStatement(ddl);
         stmt.execute();
         this.table = table;
@@ -185,7 +192,6 @@ public class PhoenixMetricsSink implements MetricsSink {
     public void flush() {
         try {
             this.conn.commit();
-            this.conn.rollback();
         } catch (SQLException e) {
             LOG.error("Failed to commit changes to table", e);
         }

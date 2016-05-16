@@ -37,10 +37,12 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
 
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.compile.OrderByCompiler.OrderBy;
@@ -52,6 +54,7 @@ import org.apache.phoenix.expression.aggregator.Aggregator;
 import org.apache.phoenix.expression.aggregator.CountAggregator;
 import org.apache.phoenix.expression.aggregator.ServerAggregators;
 import org.apache.phoenix.expression.function.TimeUnit;
+import org.apache.phoenix.filter.ColumnProjectionFilter;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.jdbc.PhoenixPreparedStatement;
@@ -68,6 +71,7 @@ import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.PropertiesUtil;
 import org.apache.phoenix.util.QueryUtil;
+import org.apache.phoenix.util.ScanUtil;
 import org.apache.phoenix.util.SchemaUtil;
 import org.junit.Test;
 
@@ -159,7 +163,7 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
             String query = "CREATE TABLE t1 (k integer not null primary key, a.k decimal, b.k decimal)";
             conn.createStatement().execute(query);
             PhoenixConnection pconn = conn.unwrap(PhoenixConnection.class);
-            PColumn c = pconn.getMetaDataCache().getTable(new PTableKey(pconn.getTenantId(), "T1")).getColumn("K");
+            PColumn c = pconn.getTable(new PTableKey(pconn.getTenantId(), "T1")).getColumn("K");
             assertTrue(SchemaUtil.isPKColumn(c));
         } finally {
             conn.close();
@@ -217,7 +221,7 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
             statement.execute();
             fail();
         } catch (SQLException e) {
-            assertTrue(e.getMessage(), e.getMessage().contains("ERROR 517 (42895): Invalid not null constraint on non primary key column columnName=FOO.PK"));
+            assertEquals(SQLExceptionCode.INVALID_NOT_NULL_CONSTRAINT.getErrorCode(), e.getErrorCode());
         } finally {
             conn.close();
         }
@@ -441,6 +445,12 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
         return plan.getContext().getScan();
     }
     
+    private Scan projectQuery(String query) throws SQLException {
+        QueryPlan plan = getQueryPlan(query, Collections.emptyList());
+        plan.iterator(); // Forces projection
+        return plan.getContext().getScan();
+    }
+    
     private QueryPlan getQueryPlan(String query, List<Object> binds) throws SQLException {
         Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
         Connection conn = DriverManager.getConnection(getUrl(), props);
@@ -449,7 +459,8 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
             for (Object bind : binds) {
                 statement.setObject(1, bind);
             }
-            return statement.compileQuery(query);
+            QueryPlan plan = statement.compileQuery(query);
+            return plan;
         } finally {
             conn.close();
         }
@@ -1208,7 +1219,7 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     
     private void assertImmutableRows(Connection conn, String fullTableName, boolean expectedValue) throws SQLException {
         PhoenixConnection pconn = conn.unwrap(PhoenixConnection.class);
-        assertEquals(expectedValue, pconn.getMetaDataCache().getTable(new PTableKey(pconn.getTenantId(), fullTableName)).isImmutableRows());
+        assertEquals(expectedValue, pconn.getTable(new PTableKey(pconn.getTenantId(), fullTableName)).isImmutableRows());
     }
     
     @Test
@@ -1220,7 +1231,7 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
             conn.createStatement().execute(ddl);
             assertImmutableRows(conn, "T", true);
             conn.createStatement().execute(indexDDL);
-            assertImmutableRows(conn, "T", true);
+            assertImmutableRows(conn, "I", true);
             conn.createStatement().execute("DELETE FROM t WHERE v2 = 'foo'");
             fail();
         } catch (SQLException e) {
@@ -1240,13 +1251,13 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     
     @Test
     public void testInvalidNegativeArrayIndex() throws Exception {
-    	String query = "SELECT a_double_array[-20] FROM table_with_array";
-    	Connection conn = DriverManager.getConnection(getUrl());
+        String query = "SELECT a_double_array[-20] FROM table_with_array";
+        Connection conn = DriverManager.getConnection(getUrl());
         try {
             conn.createStatement().execute(query);
             fail();
         } catch (Exception e) {
-        	
+            
         }
     }
     @Test
@@ -1263,8 +1274,8 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     
     @Test
     public void testNonArrayColumnWithIndex() throws Exception {
-    	String query = "SELECT a_float[1] FROM table_with_array";
-    	Connection conn = DriverManager.getConnection(getUrl());
+        String query = "SELECT a_float[1] FROM table_with_array";
+        Connection conn = DriverManager.getConnection(getUrl());
         try {
             conn.createStatement().execute(query);
             fail();
@@ -1378,7 +1389,7 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
                 compileQuery(query, binds);
                 fail("Compilation should have failed since this is an invalid usage of NEXT VALUE FOR: " + query);
             } catch (SQLException e) {
-                assertEquals(SQLExceptionCode.INVALID_USE_OF_NEXT_VALUE_FOR.getErrorCode(), e.getErrorCode());
+                assertEquals(query, SQLExceptionCode.INVALID_USE_OF_NEXT_VALUE_FOR.getErrorCode(), e.getErrorCode());
             }
         }
     }
@@ -1520,7 +1531,7 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
                 statement.execute("create local index my_idx on example (fn) DEFAULT_COLUMN_FAMILY='F'");
                 fail();
             } catch (SQLException e) {
-                assertEquals(SQLExceptionCode.VIEW_WITH_PROPERTIES.getErrorCode(),e.getErrorCode());
+                assertEquals(SQLExceptionCode.DEFAULT_COLUMN_FAMILY_ON_SHARED_TABLE.getErrorCode(),e.getErrorCode());
             }
             statement.execute("create local index my_idx on example (fn)");
        } finally {
@@ -1853,6 +1864,39 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
     }
     
     @Test
+    public void testGroupByOrderPreserving2() throws Exception {
+        Connection conn = DriverManager.getConnection(getUrl());
+        conn.createStatement().execute("CREATE TABLE T (ORGANIZATION_ID char(15) not null, \n" + 
+                "JOURNEY_ID char(15) not null, \n" + 
+                "DATASOURCE SMALLINT not null, \n" + 
+                "MATCH_STATUS TINYINT not null, \n" + 
+                "EXTERNAL_DATASOURCE_KEY varchar(30), \n" + 
+                "ENTITY_ID char(15) not null, \n" + 
+                "CONSTRAINT PK PRIMARY KEY (\n" + 
+                "    ORGANIZATION_ID, \n" + 
+                "    JOURNEY_ID, \n" + 
+                "    DATASOURCE, \n" + 
+                "    MATCH_STATUS,\n" + 
+                "    EXTERNAL_DATASOURCE_KEY,\n" + 
+                "    ENTITY_ID))");
+        String[] queries = {
+                "SELECT COUNT(1) As DUP_COUNT\n" + 
+                "    FROM T \n" + 
+                "   WHERE JOURNEY_ID='07ixx000000004J' AND \n" + 
+                "                 DATASOURCE=0 AND MATCH_STATUS <= 1 and \n" + 
+                "                 ORGANIZATION_ID='07ixx000000004J' \n" + 
+                "    GROUP BY MATCH_STATUS, EXTERNAL_DATASOURCE_KEY \n" + 
+                "    HAVING COUNT(1) > 1",
+                };
+        String query;
+        for (int i = 0; i < queries.length; i++) {
+            query = queries[i];
+            QueryPlan plan = conn.createStatement().unwrap(PhoenixStatement.class).compileQuery(query);
+            assertTrue("Expected group by to be order preserving: " + query, plan.getGroupBy().isOrderPreserving());
+        }
+    }
+    
+    @Test
     public void testNotGroupByOrderPreserving() throws Exception {
         Connection conn = DriverManager.getConnection(getUrl());
         conn.createStatement().execute("CREATE TABLE t (k1 date not null, k2 date not null, k3 date not null, v varchar, constraint pk primary key(k1,k2,k3))");
@@ -2023,9 +2067,27 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
      public void testFailNoFromClauseSelect() throws Exception {
          Connection conn = DriverManager.getConnection(getUrl());
          try {
-             conn.createStatement().executeQuery("SELECT foo, bar");
-             fail("Should have got ColumnNotFoundException");
-         } catch (ColumnNotFoundException e) {            
+             try {
+                 conn.createStatement().executeQuery("SELECT foo, bar");
+                 fail("Should have got ColumnNotFoundException");
+             } catch (ColumnNotFoundException e) {            
+             }
+             
+             try {
+                 conn.createStatement().executeQuery("SELECT *");
+                 fail("Should have got SQLException");
+             } catch (SQLException e) {
+                 assertEquals(SQLExceptionCode.NO_TABLE_SPECIFIED_FOR_WILDCARD_SELECT.getErrorCode(), e.getErrorCode());
+             }
+             
+             try {
+                 conn.createStatement().executeQuery("SELECT A.*");
+                 fail("Should have got SQLException");
+             } catch (SQLException e) {
+                 assertEquals(SQLExceptionCode.NO_TABLE_SPECIFIED_FOR_WILDCARD_SELECT.getErrorCode(), e.getErrorCode());
+             }
+         } finally {
+             conn.close();
          }
      }
 
@@ -2106,4 +2168,150 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
             conn.close();
         }
     }
+    
+    @Test
+    public void testAddingRowTimestampColumn() throws Exception {
+        Connection conn = DriverManager.getConnection(getUrl());
+        // Column of type VARCHAR cannot be declared as ROW_TIMESTAMP
+        try {
+            conn.createStatement().execute("CREATE TABLE T1 (PK1 VARCHAR NOT NULL, PK2 VARCHAR NOT NULL, KV1 VARCHAR CONSTRAINT PK PRIMARY KEY(PK1, PK2 ROW_TIMESTAMP)) ");
+            fail("Varchar column cannot be added as row_timestamp");
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.ROWTIMESTAMP_COL_INVALID_TYPE.getErrorCode(), e.getErrorCode());
+        }
+        // Column of type INTEGER cannot be declared as ROW_TIMESTAMP
+        try {
+            conn.createStatement().execute("CREATE TABLE T1 (PK1 VARCHAR NOT NULL, PK2 INTEGER NOT NULL, KV1 VARCHAR CONSTRAINT PK PRIMARY KEY(PK1, PK2 ROW_TIMESTAMP)) ");
+            fail("Integer column cannot be added as row_timestamp");
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.ROWTIMESTAMP_COL_INVALID_TYPE.getErrorCode(), e.getErrorCode());
+        }
+        // Column of type DOUBLE cannot be declared as ROW_TIMESTAMP
+        try {
+            conn.createStatement().execute("CREATE TABLE T1 (PK1 VARCHAR NOT NULL, PK2 DOUBLE NOT NULL, KV1 VARCHAR CONSTRAINT PK PRIMARY KEY(PK1, PK2 ROW_TIMESTAMP)) ");
+            fail("Double column cannot be added as row_timestamp");
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.ROWTIMESTAMP_COL_INVALID_TYPE.getErrorCode(), e.getErrorCode());
+        }
+        // Invalid - two columns declared as row_timestamp in pk constraint
+        try {
+            conn.createStatement().execute("CREATE TABLE T2 (PK1 DATE NOT NULL, PK2 DATE NOT NULL, KV1 VARCHAR CONSTRAINT PK PRIMARY KEY(PK1 ROW_TIMESTAMP , PK2 ROW_TIMESTAMP)) ");
+            fail("Creating table with two row_timestamp columns should fail");
+        } catch (SQLException e) {
+            assertEquals(SQLExceptionCode.ROWTIMESTAMP_ONE_PK_COL_ONLY.getErrorCode(), e.getErrorCode());
+        }
+        
+        // Invalid because only (unsigned)date, time, long, (unsigned)timestamp are valid data types for column to be declared as row_timestamp
+        try {
+            conn.createStatement().execute("CREATE TABLE T5 (PK1 VARCHAR PRIMARY KEY ROW_TIMESTAMP, PK2 VARCHAR, KV1 VARCHAR)");
+            fail("Creating table with a key value column as row_timestamp should fail");
+        } catch (SQLException e) {
+            assertEquals(SQLExceptionCode.ROWTIMESTAMP_COL_INVALID_TYPE.getErrorCode(), e.getErrorCode());
+        }
+    }
+
+    @Test
+    public void testGroupByVarbinaryOrArray() throws Exception {
+        Connection conn = DriverManager.getConnection(getUrl());
+        conn.createStatement().execute("CREATE TABLE T1 (PK VARCHAR PRIMARY KEY, c1 VARCHAR, c2 VARBINARY, C3 VARCHAR ARRAY, c4 VARBINARY, C5 VARCHAR ARRAY, C6 BINARY(10)) ");
+        try {
+            conn.createStatement().executeQuery("SELECT c1 FROM t1 GROUP BY c1,c2,c3");
+            fail();
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.UNSUPPORTED_GROUP_BY_EXPRESSIONS.getErrorCode(), e.getErrorCode());
+        }
+        try {
+            conn.createStatement().executeQuery("SELECT c1 FROM t1 GROUP BY c1,c3,c2");
+            fail();
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.UNSUPPORTED_GROUP_BY_EXPRESSIONS.getErrorCode(), e.getErrorCode());
+        }
+        try {
+            conn.createStatement().executeQuery("SELECT c1 FROM t1 GROUP BY c1,c2,c4");
+            fail();
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.UNSUPPORTED_GROUP_BY_EXPRESSIONS.getErrorCode(), e.getErrorCode());
+        }
+        try {
+            conn.createStatement().executeQuery("SELECT c1 FROM t1 GROUP BY c1,c3,c5");
+            fail();
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.UNSUPPORTED_GROUP_BY_EXPRESSIONS.getErrorCode(), e.getErrorCode());
+        }
+        try {
+            conn.createStatement().executeQuery("SELECT c1 FROM t1 GROUP BY c1,c6,c5");
+            fail();
+        } catch(SQLException e) {
+            assertEquals(SQLExceptionCode.UNSUPPORTED_GROUP_BY_EXPRESSIONS.getErrorCode(), e.getErrorCode());
+        }
+    }
+    
+    @Test
+    public void testQueryWithSCN() throws Exception {
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.put(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(1000));
+        props.put(QueryServices.TRANSACTIONS_ENABLED, Boolean.TRUE.toString());
+        try (Connection conn = DriverManager.getConnection(getUrl(), props);) {
+            try {
+                conn.createStatement().execute(
+                                "CREATE TABLE t (k VARCHAR NOT NULL PRIMARY KEY, v1 VARCHAR) TRANSACTIONAL=true");
+                fail();
+            } catch (SQLException e) {
+                assertEquals("Unexpected Exception",
+                        SQLExceptionCode.CANNOT_START_TRANSACTION_WITH_SCN_SET
+                                .getErrorCode(), e.getErrorCode());
+            }
+        }
+    }
+
+    private static void assertFamilies(Scan s, String... families) {
+        assertEquals(families.length, s.getFamilyMap().size());
+        for (String fam : families) {
+            byte[] cf = Bytes.toBytes(fam);
+            assertTrue("Expected to contain " + fam, s.getFamilyMap().containsKey(cf));
+        }
+    }
+    
+    @Test
+    public void testProjection() throws SQLException {
+        Connection conn = DriverManager.getConnection(getUrl());
+        try {
+            conn.createStatement().execute("CREATE TABLE t(k INTEGER PRIMARY KEY, a.v1 VARCHAR, b.v2 VARCHAR, c.v3 VARCHAR)");
+            assertFamilies(projectQuery("SELECT k FROM t"), "A");
+            assertFamilies(projectQuery("SELECT k FROM t WHERE k = 5"), "A");
+            assertFamilies(projectQuery("SELECT v2 FROM t WHERE k = 5"), "A", "B");
+            assertFamilies(projectQuery("SELECT v2 FROM t WHERE v2 = 'a'"), "B");
+            assertFamilies(projectQuery("SELECT v3 FROM t WHERE v2 = 'a'"), "B", "C");
+            assertFamilies(projectQuery("SELECT v3 FROM t WHERE v2 = 'a' AND v3 is null"), "A", "B", "C");
+        } finally {
+            conn.close();
+        }
+    }
+    
+    private static boolean hasColumnProjectionFilter(Scan scan) {
+        Iterator<Filter> iterator = ScanUtil.getFilterIterator(scan);
+        while (iterator.hasNext()) {
+            Filter filter = iterator.next();
+            if (filter instanceof ColumnProjectionFilter) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    @Test
+    public void testColumnProjectionOptimized() throws SQLException {
+        Connection conn = DriverManager.getConnection(getUrl());
+        try {
+            conn.createStatement().execute("CREATE TABLE t(k INTEGER PRIMARY KEY, a.v1 VARCHAR, a.v1b VARCHAR, b.v2 VARCHAR, c.v3 VARCHAR)");
+            assertTrue(hasColumnProjectionFilter(projectQuery("SELECT k, v1 FROM t WHERE v2 = 'foo'")));
+            assertFalse(hasColumnProjectionFilter(projectQuery("SELECT k, v1 FROM t WHERE v1 = 'foo'")));
+            assertFalse(hasColumnProjectionFilter(projectQuery("SELECT v1,v2 FROM t WHERE v1 = 'foo'")));
+            assertTrue(hasColumnProjectionFilter(projectQuery("SELECT v1,v2 FROM t WHERE v1 = 'foo' and v2 = 'bar' and v3 = 'bas'")));
+            assertFalse(hasColumnProjectionFilter(projectQuery("SELECT a.* FROM t WHERE v1 = 'foo' and v1b = 'bar'")));
+        } finally {
+            conn.close();
+        }
+    }
+
 }

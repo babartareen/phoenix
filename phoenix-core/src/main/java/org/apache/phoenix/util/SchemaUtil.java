@@ -24,17 +24,26 @@ import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SYSTEM_CATALOG_NAM
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SYSTEM_FUNCTION_NAME_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SYSTEM_STATS_NAME_BYTES;
 
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Properties;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 
 import javax.annotation.Nullable;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.exception.SQLExceptionCode;
@@ -45,25 +54,32 @@ import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.query.QueryConstants;
+import org.apache.phoenix.query.QueryServices;
+import org.apache.phoenix.query.QueryServicesOptions;
 import org.apache.phoenix.schema.AmbiguousColumnException;
 import org.apache.phoenix.schema.ColumnFamilyNotFoundException;
 import org.apache.phoenix.schema.ColumnNotFoundException;
+import org.apache.phoenix.schema.MetaDataClient;
 import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PColumnFamily;
 import org.apache.phoenix.schema.PDatum;
-import org.apache.phoenix.schema.PMetaData;
 import org.apache.phoenix.schema.PName;
+import org.apache.phoenix.schema.PNameFactory;
 import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.RowKeySchema;
 import org.apache.phoenix.schema.RowKeySchema.RowKeySchemaBuilder;
 import org.apache.phoenix.schema.SaltingUtil;
 import org.apache.phoenix.schema.SortOrder;
+import org.apache.phoenix.schema.TableProperty;
 import org.apache.phoenix.schema.ValueSchema.Field;
 import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.schema.types.PVarbinary;
 import org.apache.phoenix.schema.types.PVarchar;
 
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 
 /**
  * 
@@ -106,6 +122,10 @@ public class SchemaUtil {
         
     };
     public static final RowKeySchema VAR_BINARY_SCHEMA = new RowKeySchemaBuilder(1).addField(VAR_BINARY_DATUM, false, SortOrder.getDefault()).build();
+    public static final String SCHEMA_FOR_DEFAULT_NAMESPACE = "DEFAULT";
+    public static final String HBASE_NAMESPACE = "HBASE";
+    public static final List<String> NOT_ALLOWED_SCHEMA_LIST = Arrays.asList(SCHEMA_FOR_DEFAULT_NAMESPACE,
+            HBASE_NAMESPACE);
     
     /**
      * May not be instantiated
@@ -227,6 +247,12 @@ public class SchemaUtil {
         return ByteUtil.concat(tenantId, QueryConstants.SEPARATOR_BYTE_ARRAY, functionName);
     }
 
+    public static byte[] getKeyForSchema(String tenantId, String schemaName) {
+        return ByteUtil.concat(tenantId == null ? ByteUtil.EMPTY_BYTE_ARRAY : Bytes.toBytes(tenantId),
+                QueryConstants.SEPARATOR_BYTE_ARRAY,
+                schemaName == null ? ByteUtil.EMPTY_BYTE_ARRAY : Bytes.toBytes(schemaName));
+    }
+
     public static byte[] getTableKey(String tenantId, String schemaName, String tableName) {
         return ByteUtil.concat(tenantId == null  ? ByteUtil.EMPTY_BYTE_ARRAY : Bytes.toBytes(tenantId), QueryConstants.SEPARATOR_BYTE_ARRAY, schemaName == null ? ByteUtil.EMPTY_BYTE_ARRAY : Bytes.toBytes(schemaName), QueryConstants.SEPARATOR_BYTE_ARRAY, Bytes.toBytes(tableName));
     }
@@ -242,6 +268,11 @@ public class SchemaUtil {
         }
         String cf = caseSensitive ? "\"" + optionalQualifier + "\"" : optionalQualifier;
         return cf + QueryConstants.NAME_SEPARATOR + cq;
+    }
+
+    private static String getName(String name, boolean caseSensitive) {
+        String cq = caseSensitive ? "\"" + name + "\"" : name;
+        return cq;
     }
 
     public static String getTableName(byte[] schemaName, byte[] tableName) {
@@ -262,11 +293,18 @@ public class SchemaUtil {
 
     public static String getMetaDataEntityName(String schemaName, String tableName, String familyName, String columnName) {
         if ((schemaName == null || schemaName.isEmpty()) && (tableName == null || tableName.isEmpty())) {
+            if (columnName == null || columnName.isEmpty()) {
+                return familyName;
+            }
             return getName(familyName, columnName, false);
         }
+        if ((familyName == null || familyName.isEmpty()) && (columnName == null || columnName.isEmpty())
+                && (tableName == null || tableName.equals(MetaDataClient.EMPTY_TABLE))) { return getName(schemaName,
+                        false); }
         if ((familyName == null || familyName.isEmpty()) && (columnName == null || columnName.isEmpty())) {
             return getName(schemaName, tableName, false);
         }
+
         return getName(getName(schemaName, tableName, false), getName(familyName, columnName, false), false);
     }
 
@@ -390,6 +428,11 @@ public class SchemaUtil {
         return families.isEmpty() ? table.getDefaultFamilyName() == null ? QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES : table.getDefaultFamilyName().getBytes() : families.get(0).getName().getBytes();
     }
 
+    public static String getEmptyColumnFamilyAsString(PTable table) {
+        List<PColumnFamily> families = table.getColumnFamilies();
+        return families.isEmpty() ? table.getDefaultFamilyName() == null ? QueryConstants.DEFAULT_COLUMN_FAMILY : table.getDefaultFamilyName().getString() : families.get(0).getName().getString();
+    }
+
     public static ImmutableBytesPtr getEmptyColumnFamilyPtr(PTable table) {
         List<PColumnFamily> families = table.getColumnFamilies();
         return families.isEmpty() ? table.getDefaultFamilyName() == null ? QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES_PTR : table.getDefaultFamilyName().getBytesPtr() : families.get(0)
@@ -397,23 +440,28 @@ public class SchemaUtil {
     }
 
     public static boolean isMetaTable(byte[] tableName) {
-        return Bytes.compareTo(tableName, SYSTEM_CATALOG_NAME_BYTES) == 0;
+        return Bytes.compareTo(tableName, SYSTEM_CATALOG_NAME_BYTES) == 0 || Bytes.compareTo(tableName,
+                SchemaUtil.getPhysicalTableName(SYSTEM_CATALOG_NAME_BYTES, true).getName()) == 0;
     }
 
     public static boolean isFunctionTable(byte[] tableName) {
-        return Bytes.compareTo(tableName, SYSTEM_FUNCTION_NAME_BYTES) == 0;
+        return Bytes.compareTo(tableName, SYSTEM_FUNCTION_NAME_BYTES) == 0 || Bytes.compareTo(tableName,
+                SchemaUtil.getPhysicalTableName(SYSTEM_FUNCTION_NAME_BYTES, true).getName()) == 0;
     }
 
     public static boolean isStatsTable(byte[] tableName) {
-        return Bytes.compareTo(tableName, SYSTEM_STATS_NAME_BYTES) == 0;
+        return Bytes.compareTo(tableName, SYSTEM_STATS_NAME_BYTES) == 0 || Bytes.compareTo(tableName,
+                SchemaUtil.getPhysicalTableName(SYSTEM_STATS_NAME_BYTES, true).getName()) == 0;
     }
-    
+
     public static boolean isSequenceTable(byte[] tableName) {
-        return Bytes.compareTo(tableName, PhoenixDatabaseMetaData.SEQUENCE_FULLNAME_BYTES) == 0;
+        return Bytes.compareTo(tableName, PhoenixDatabaseMetaData.SYSTEM_SEQUENCE_NAME_BYTES) == 0
+                || Bytes.compareTo(tableName, SchemaUtil
+                        .getPhysicalTableName(PhoenixDatabaseMetaData.SYSTEM_SEQUENCE_NAME_BYTES, true).getName()) == 0;
     }
 
     public static boolean isSequenceTable(PTable table) {
-        return PhoenixDatabaseMetaData.SEQUENCE_FULLNAME.equals(table.getName().getString());
+        return PhoenixDatabaseMetaData.SYSTEM_SEQUENCE_NAME.equals(table.getName().getString());
     }
 
     public static boolean isMetaTable(PTable table) {
@@ -517,15 +565,10 @@ public class SchemaUtil {
     }
 
     protected static PhoenixConnection addMetaDataColumn(PhoenixConnection conn, long scn, String columnDef) throws SQLException {
-        String url = conn.getURL();
-        Properties props = conn.getClientInfo();
-        PMetaData metaData = conn.getMetaDataCache();
-        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(scn));
         PhoenixConnection metaConnection = null;
-
         Statement stmt = null;
         try {
-            metaConnection = new PhoenixConnection(conn.getQueryServices(), url, props, metaData);
+            metaConnection = new PhoenixConnection(conn.getQueryServices(), conn, scn);
             try {
                 stmt = metaConnection.createStatement();
                 stmt.executeUpdate("ALTER TABLE SYSTEM.\"TABLE\" ADD IF NOT EXISTS " + columnDef);
@@ -552,9 +595,15 @@ public class SchemaUtil {
             return true;
         }
     }
-    
+
     public static String getSchemaNameFromFullName(String tableName) {
-        int index = tableName.indexOf(QueryConstants.NAME_SEPARATOR);
+        if (tableName
+                .contains(":")) { return getSchemaNameFromFullName(tableName, QueryConstants.NAMESPACE_SEPARATOR); }
+        return getSchemaNameFromFullName(tableName, QueryConstants.NAME_SEPARATOR);
+    }
+
+    public static String getSchemaNameFromFullName(String tableName, String separator) {
+        int index = tableName.indexOf(separator);
         if (index < 0) {
             return StringUtil.EMPTY_STRING; 
         }
@@ -576,7 +625,8 @@ public class SchemaUtil {
         }
         int index = indexOf(tableName, QueryConstants.NAME_SEPARATOR_BYTE);
         if (index < 0) {
-            return StringUtil.EMPTY_STRING; 
+            index = indexOf(tableName, QueryConstants.NAMESPACE_SEPARATOR_BYTE);
+            if (index < 0) { return StringUtil.EMPTY_STRING; }
         }
         return Bytes.toString(tableName, 0, index);
     }
@@ -587,13 +637,19 @@ public class SchemaUtil {
         }
         int index = indexOf(tableName, QueryConstants.NAME_SEPARATOR_BYTE);
         if (index < 0) {
-            return Bytes.toString(tableName); 
+            index = indexOf(tableName, QueryConstants.NAMESPACE_SEPARATOR_BYTE);
+            if (index < 0) { return Bytes.toString(tableName); }
         }
         return Bytes.toString(tableName, index+1, tableName.length - index - 1);
     }
 
     public static String getTableNameFromFullName(String tableName) {
-        int index = tableName.indexOf(QueryConstants.NAME_SEPARATOR);
+        if (tableName.contains(":")) { return getTableNameFromFullName(tableName, QueryConstants.NAMESPACE_SEPARATOR); }
+        return getTableNameFromFullName(tableName, QueryConstants.NAME_SEPARATOR);
+    }
+
+    public static String getTableNameFromFullName(String tableName, String separator) {
+        int index = tableName.indexOf(separator);
         if (index < 0) {
             return tableName; 
         }
@@ -603,7 +659,8 @@ public class SchemaUtil {
     public static byte[] getTableKeyFromFullName(String fullTableName) {
         int index = fullTableName.indexOf(QueryConstants.NAME_SEPARATOR);
         if (index < 0) {
-            return getTableKey(null, null, fullTableName); 
+            index = fullTableName.indexOf(QueryConstants.NAMESPACE_SEPARATOR);
+            if (index < 0) { return getTableKey(null, null, fullTableName); }
         }
         String schemaName = fullTableName.substring(0, index);
         String tableName = fullTableName.substring(index+1);
@@ -711,6 +768,16 @@ public class SchemaUtil {
         checkArgument(!isNullOrEmpty(columnName), "Column name cannot be null or empty");
         return columnFamilyName == null ? ("\"" + columnName + "\"") : ("\"" + columnFamilyName + "\"" + QueryConstants.NAME_SEPARATOR + "\"" + columnName + "\"");
     }
+
+    public static boolean hasHTableDescriptorProps(Map<String, Object> tableProps) {
+        int pTablePropCount = 0;
+        for (String prop : tableProps.keySet()) {
+            if (TableProperty.isPhoenixTableProperty(prop)) {
+                pTablePropCount++;
+            }
+        }
+        return tableProps.size() - pTablePropCount > 0;
+    }
     
     /**
      * Replaces all occurrences of {@link #ESCAPE_CHARACTER} with an empty character. 
@@ -743,5 +810,210 @@ public class SchemaUtil {
     
     public static byte getSeparatorByte(boolean rowKeyOrderOptimizable, boolean isNullValue, Expression e) {
         return getSeparatorByte(rowKeyOrderOptimizable, isNullValue, e.getSortOrder());
+    }
+
+    /**
+     * Get list of ColumnInfos that contain Column Name and its associated
+     * PDataType for an import. The supplied list of columns can be null -- if it is non-null,
+     * it represents a user-supplied list of columns to be imported.
+     *
+     * @param conn Phoenix connection from which metadata will be read
+     * @param tableName Phoenix table name whose columns are to be checked. Can include a schema
+     *                  name
+     * @param columns user-supplied list of import columns, can be null
+     * @param strict if true, an exception will be thrown if unknown columns are supplied
+     */
+    public static List<ColumnInfo> generateColumnInfo(Connection conn,
+                                                      String tableName, List<String> columns, boolean strict)
+            throws SQLException {
+        Map<String, Integer> columnNameToTypeMap = Maps.newLinkedHashMap();
+        Set<String> ambiguousColumnNames = new HashSet<String>();
+        Map<String, Integer> fullColumnNameToTypeMap = Maps.newLinkedHashMap();
+        DatabaseMetaData dbmd = conn.getMetaData();
+        int unfoundColumnCount = 0;
+        // TODO: escape wildcard characters here because we don't want that
+        // behavior here
+        String escapedTableName = StringUtil.escapeLike(tableName);
+        String[] schemaAndTable = escapedTableName.split("\\.");
+        ResultSet rs = null;
+        try {
+            rs = dbmd.getColumns(null, (schemaAndTable.length == 1 ? ""
+                            : schemaAndTable[0]),
+                    (schemaAndTable.length == 1 ? escapedTableName
+                            : schemaAndTable[1]), null);
+            while (rs.next()) {
+                String colName = rs.getString(QueryUtil.COLUMN_NAME_POSITION);
+                String colFam = rs.getString(QueryUtil.COLUMN_FAMILY_POSITION);
+
+                // use family qualifier, if available, otherwise, use column name
+                String fullColumn = (colFam==null?colName:String.format("%s.%s",colFam,colName));
+                String sqlTypeName = rs.getString(QueryUtil.DATA_TYPE_NAME_POSITION);
+
+                // allow for both bare and family qualified names.
+                if (columnNameToTypeMap.keySet().contains(colName)) {
+                    ambiguousColumnNames.add(colName);
+                }
+                columnNameToTypeMap.put(
+                        colName,
+                        PDataType.fromSqlTypeName(sqlTypeName).getSqlType());
+                fullColumnNameToTypeMap.put(
+                        fullColumn,
+                        PDataType.fromSqlTypeName(sqlTypeName).getSqlType());
+            }
+            if (columnNameToTypeMap.isEmpty()) {
+                throw new IllegalArgumentException("Table " + tableName + " not found");
+            }
+        } finally {
+            if (rs != null) {
+                rs.close();
+            }
+        }
+        List<ColumnInfo> columnInfoList = Lists.newArrayList();
+        Set<String> unresolvedColumnNames = new TreeSet<String>();
+        if (columns == null) {
+            // use family qualified names by default, if no columns are specified.
+            for (Map.Entry<String, Integer> entry : fullColumnNameToTypeMap
+                    .entrySet()) {
+                columnInfoList.add(new ColumnInfo(entry.getKey(), entry.getValue()));
+            }
+        } else {
+            // Leave "null" as indication to skip b/c it doesn't exist
+            for (int i = 0; i < columns.size(); i++) {
+                String columnName = columns.get(i).trim();
+                Integer sqlType = null;
+                if (fullColumnNameToTypeMap.containsKey(columnName)) {
+                    sqlType = fullColumnNameToTypeMap.get(columnName);
+                } else if (columnNameToTypeMap.containsKey(columnName)) {
+                    if (ambiguousColumnNames.contains(columnName)) {
+                        unresolvedColumnNames.add(columnName);
+                    }
+                    // fall back to bare column name.
+                    sqlType = columnNameToTypeMap.get(columnName);
+                }
+                if (unresolvedColumnNames.size()>0) {
+                    StringBuilder exceptionMessage = new StringBuilder();
+                    boolean first = true;
+                    exceptionMessage.append("Unable to resolve these column names to a single column family:\n");
+                    for (String col : unresolvedColumnNames) {
+                        if (first) first = false;
+                        else exceptionMessage.append(",");
+                        exceptionMessage.append(col);
+                    }
+                    exceptionMessage.append("\nAvailable columns with column families:\n");
+                    first = true;
+                    for (String col : fullColumnNameToTypeMap.keySet()) {
+                        if (first) first = false;
+                        else exceptionMessage.append(",");
+                        exceptionMessage.append(col);
+                    }
+                    throw new SQLException(exceptionMessage.toString());
+                }
+
+                if (sqlType == null) {
+                    if (strict) {
+                        throw new SQLExceptionInfo.Builder(
+                                SQLExceptionCode.COLUMN_NOT_FOUND)
+                                .setColumnName(columnName)
+                                .setTableName(tableName).build()
+                                .buildException();
+                    }
+                    unfoundColumnCount++;
+                } else {
+                    columnInfoList.add(new ColumnInfo(columnName, sqlType));
+                }
+            }
+            if (unfoundColumnCount == columns.size()) {
+                throw new SQLExceptionInfo.Builder(
+                        SQLExceptionCode.COLUMN_NOT_FOUND)
+                        .setColumnName(
+                                Arrays.toString(columns.toArray(new String[0])))
+                        .setTableName(tableName).build().buildException();
+            }
+        }
+        return columnInfoList;
+    }
+    
+    public static boolean hasRowTimestampColumn(PTable table) {
+    	return table.getRowTimestampColPos()>0;
+    }
+
+    public static byte[] getTableKey(PTable dataTable) {
+        PName tenantId = dataTable.getTenantId();
+        PName schemaName = dataTable.getSchemaName();
+        return getTableKey(tenantId == null ? ByteUtil.EMPTY_BYTE_ARRAY : tenantId.getBytes(), schemaName == null ? ByteUtil.EMPTY_BYTE_ARRAY : schemaName.getBytes(), dataTable.getTableName().getBytes());
+    }
+
+    public static byte[] getSchemaKey(String schemaName) {
+        return SchemaUtil.getTableKey(null, schemaName, MetaDataClient.EMPTY_TABLE);
+    }
+
+    public static PName getPhysicalHBaseTableName(PName pName, boolean isNamespaceMapped, PTableType type) {
+        return getPhysicalHBaseTableName(pName.toString(), isNamespaceMapped, type);
+    }
+
+    public static PName getPhysicalHBaseTableName(byte[] tableName, boolean isNamespaceMapped, PTableType type) {
+        return getPhysicalHBaseTableName(Bytes.toString(tableName), isNamespaceMapped, type);
+    }
+
+    public static TableName getPhysicalTableName(String fullTableName, ReadOnlyProps readOnlyProps) {
+        return getPhysicalName(Bytes.toBytes(fullTableName), readOnlyProps);
+    }
+
+    public static TableName getPhysicalTableName(byte[] fullTableName, Configuration conf) {
+        return getPhysicalTableName(fullTableName, isNamespaceMappingEnabled(
+                isSystemTable(fullTableName) ? PTableType.SYSTEM : null, new ReadOnlyProps(conf.iterator())));
+    }
+
+    public static TableName getPhysicalName(byte[] fullTableName, ReadOnlyProps readOnlyProps) {
+        return getPhysicalTableName(fullTableName,
+                isNamespaceMappingEnabled(isSystemTable(fullTableName) ? PTableType.SYSTEM : null, readOnlyProps));
+    }
+
+    public static TableName getPhysicalTableName(byte[] fullTableName, boolean isNamespaceMappingEnabled) {
+        if (indexOf(fullTableName, QueryConstants.NAMESPACE_SEPARATOR_BYTE) > 0
+                || !isNamespaceMappingEnabled) { return TableName.valueOf(fullTableName); }
+        String tableName = getTableNameFromFullName(fullTableName);
+        String schemaName = getSchemaNameFromFullName(fullTableName);
+        return TableName.valueOf(schemaName, tableName);
+    }
+
+    public static PName getPhysicalHBaseTableName(String tableName, boolean isNamespaceMapped, PTableType type) {
+        if (!isNamespaceMapped) { return PNameFactory.newName(tableName); }
+        return PNameFactory
+                .newName(tableName.replace(QueryConstants.NAME_SEPARATOR, QueryConstants.NAMESPACE_SEPARATOR));
+    }
+
+    public static boolean isSchemaCheckRequired(PTableType tableType, ReadOnlyProps props) {
+        return PTableType.TABLE.equals(tableType) && isNamespaceMappingEnabled(tableType, props);
+    }
+
+    public static boolean isNamespaceMappingEnabled(PTableType type, ReadOnlyProps readOnlyProps) {
+        return readOnlyProps.getBoolean(QueryServices.IS_NAMESPACE_MAPPING_ENABLED,
+                QueryServicesOptions.DEFAULT_IS_NAMESPACE_MAPPING_ENABLED)
+                && (type == null || !PTableType.SYSTEM.equals(type)
+                        || readOnlyProps.getBoolean(QueryServices.IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE,
+                                QueryServicesOptions.DEFAULT_IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE));
+    }
+
+    public static byte[] getParentTableNameFromIndexTable(byte[] physicalTableName, String indexPrefix) {
+        String tableName = Bytes.toString(physicalTableName);
+        return getParentTableNameFromIndexTable(tableName, indexPrefix).getBytes();
+    }
+
+    public static String getParentTableNameFromIndexTable(String physicalTableName, String indexPrefix) {
+        if (physicalTableName.contains(QueryConstants.NAMESPACE_SEPARATOR)) {
+            String schemaNameFromFullName = getSchemaNameFromFullName(physicalTableName,
+                    QueryConstants.NAMESPACE_SEPARATOR);
+            String tableNameFromFullName = getTableNameFromFullName(physicalTableName,
+                    QueryConstants.NAMESPACE_SEPARATOR);
+            return schemaNameFromFullName + QueryConstants.NAMESPACE_SEPARATOR
+                    + getStrippedName(tableNameFromFullName, indexPrefix);
+        }
+        return getStrippedName(physicalTableName, indexPrefix);
+    }
+
+    private static String getStrippedName(String physicalTableName, String indexPrefix) {
+        return physicalTableName.indexOf(indexPrefix) == 0 ? physicalTableName.substring(indexPrefix.length())
+                : physicalTableName;
     }
 }

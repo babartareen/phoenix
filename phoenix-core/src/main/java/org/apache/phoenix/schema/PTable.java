@@ -159,6 +159,7 @@ public interface PTable extends PMetaDataEntity {
 
     long getTimeStamp();
     long getSequenceNumber();
+    long getIndexDisableTimestamp();
     /**
      * @return table name
      */
@@ -308,16 +309,21 @@ public interface PTable extends PMetaDataEntity {
      */
     public List<PName> getPhysicalNames();
 
+    /**
+     * For a view, return the name of table in HBase that physically stores data.
+     * @return the name of the physical HBase table storing the data.
+     */
     PName getPhysicalName();
     boolean isImmutableRows();
 
-    void getIndexMaintainers(ImmutableBytesWritable ptr, PhoenixConnection connection);
+    boolean getIndexMaintainers(ImmutableBytesWritable ptr, PhoenixConnection connection);
     IndexMaintainer getIndexMaintainer(PTable dataTable, PhoenixConnection connection);
     PName getDefaultFamilyName();
 
     boolean isWALDisabled();
     boolean isMultiTenant();
     boolean getStoreNulls();
+    boolean isTransactional();
 
     ViewType getViewType();
     String getViewStatement();
@@ -336,4 +342,20 @@ public interface PTable extends PMetaDataEntity {
      * @return true if optimizations row key order optimizations are possible
      */
     boolean rowKeyOrderOptimizable();
+    
+    /**
+     * @return Position of the column with {@link PColumn#isRowTimestamp()} as true. 
+     * -1 if there is no such column.
+     */
+    int getRowTimestampColPos();
+    long getUpdateCacheFrequency();
+
+    boolean isNamespaceMapped();
+    
+    /**
+     * 
+     * @return The sequence name used to get the unique identifier for views
+     * that are automatically partitioned.
+     */
+    String getAutoPartitionSeqName(); 
 }

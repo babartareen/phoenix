@@ -72,6 +72,7 @@ tokens
     COLUMN='column';
     SESSION='session';
     TABLE='table';
+    SCHEMA='schema';
     ADD='add';
     SPLIT='split';
     EXPLAIN='explain';
@@ -125,6 +126,13 @@ tokens
     REPLACE = 'replace';
     LIST = 'list';
     JARS='jars';
+    ROW_TIMESTAMP='row_timestamp';
+    USE='use';
+    OFFSET ='offset';
+    FETCH = 'fetch';
+    ROW = 'row';
+    ROWS = 'rows';
+    ONLY = 'only';
     COMPARE='compare';
 }
 
@@ -393,6 +401,7 @@ oneStatement returns [BindableStatement ret]
     |	s=upsert_node
     |   s=delete_node
     |   s=create_table_node
+    |   s=create_schema_node
     |   s=create_view_node
     |   s=create_index_node
     |   s=drop_table_node
@@ -408,6 +417,8 @@ oneStatement returns [BindableStatement ret]
     |   s=alter_session_node
     |	s=create_sequence_node
     |	s=drop_sequence_node
+    |	s=drop_schema_node
+    |	s=use_schema_node
     |   s=update_statistics_node
     |   s=explain_node) { $ret = s; }
     ;
@@ -424,6 +435,12 @@ create_table_node returns [CreateTableStatement ret]
         (p=fam_properties)?
         (SPLIT ON s=value_expression_list)?
         {ret = factory.createTable(t, p, c, pk, s, PTableType.TABLE, ex!=null, null, null, getBindCount()); }
+    ;
+   
+// Parse a create schema statement.
+create_schema_node returns [CreateSchemaStatement ret]
+    :   CREATE SCHEMA (IF NOT ex=EXISTS)? s=identifier
+        {ret = factory.createSchema(s, ex!=null); }
     ;
 
 // Parse a create view statement.
@@ -472,16 +489,17 @@ drop_sequence_node returns [DropSequenceStatement ret]
     ;
 
 pk_constraint returns [PrimaryKeyConstraint ret]
-    :   COMMA? CONSTRAINT n=identifier PRIMARY KEY LPAREN cols=col_name_with_sort_order_list RPAREN { $ret = factory.primaryKey(n,cols); }
+    :   COMMA? CONSTRAINT n=identifier PRIMARY KEY LPAREN cols=col_name_with_sort_order_rowtimestamp_list RPAREN { $ret = factory.primaryKey(n,cols); }
     ;
 
-col_name_with_sort_order_list returns [List<Pair<ColumnName, SortOrder>> ret]
-@init{ret = new ArrayList<Pair<ColumnName, SortOrder>>(); }
-    :   p=col_name_with_sort_order {$ret.add(p);}  (COMMA p = col_name_with_sort_order {$ret.add(p);} )*
+col_name_with_sort_order_rowtimestamp_list returns [List<ColumnDefInPkConstraint> ret]
+@init{ret = new ArrayList<ColumnDefInPkConstraint>(); }
+    :   p=col_name_with_sort_order_rowtimestamp {$ret.add(p);}  (COMMA p = col_name_with_sort_order_rowtimestamp {$ret.add(p);} )*
 ;
-
-col_name_with_sort_order returns [Pair<ColumnName, SortOrder> ret]
-    :   f=identifier (order=ASC|order=DESC)? {$ret = Pair.newPair(factory.columnName(f), order == null ? SortOrder.getDefault() : SortOrder.fromDDLValue(order.getText()));}
+ 
+col_name_with_sort_order_rowtimestamp returns [ColumnDefInPkConstraint ret]
+    :   f=identifier (order=ASC|order=DESC)? (rr=ROW_TIMESTAMP)?
+        { $ret = factory.columnDefInPkConstraint(factory.columnName(f), order == null ? SortOrder.getDefault() : SortOrder.fromDDLValue(order.getText()), rr != null); }
 ;
 
 ik_constraint returns [IndexKeyConstraint ret]
@@ -508,7 +526,8 @@ fam_prop_name returns [PropertyName ret]
     ;
     
 prop_value returns [Object ret]
-    :   l=literal { $ret = l.getValue(); }
+    :   v=identifier { $ret = v; }
+    |   l=literal { $ret = l.getValue(); }
     ;
     
 column_name returns [ColumnName ret]
@@ -527,6 +546,12 @@ drop_table_node returns [DropTableStatement ret]
     :   DROP (v=VIEW | TABLE) (IF ex=EXISTS)? t=from_table_name (c=CASCADE)?
         {ret = factory.dropTable(t, v==null ? (QueryConstants.SYSTEM_SCHEMA_NAME.equals(t.getSchemaName()) ? PTableType.SYSTEM : PTableType.TABLE) : PTableType.VIEW, ex!=null, c!=null); }
     ;
+
+drop_schema_node returns [DropSchemaStatement ret]
+    :   DROP SCHEMA (IF ex=EXISTS)? s=identifier (c=CASCADE)?
+        {ret = factory.dropSchema(s, ex!=null, c!=null); }
+    ;
+
 
 // Parse a drop index statement
 drop_index_node returns [DropIndexStatement ret]
@@ -610,12 +635,13 @@ column_defs returns [List<ColumnDef> ret]
 ;
 
 column_def returns [ColumnDef ret]
-    :   c=column_name dt=identifier (LPAREN l=NUMBER (COMMA s=NUMBER)? RPAREN)? ar=ARRAY? (lsq=LSQUARE (a=NUMBER)? RSQUARE)? (nn=NOT? n=NULL)? (pk=PRIMARY KEY (order=ASC|order=DESC)?)?
+    :   c=column_name dt=identifier (LPAREN l=NUMBER (COMMA s=NUMBER)? RPAREN)? ar=ARRAY? (lsq=LSQUARE (a=NUMBER)? RSQUARE)? (nn=NOT? n=NULL)? (pk=PRIMARY KEY (order=ASC|order=DESC)? rr=ROW_TIMESTAMP?)?
         { $ret = factory.columnDef(c, dt, ar != null || lsq != null, a == null ? null :  Integer.parseInt( a.getText() ), nn!=null ? Boolean.FALSE : n!=null ? Boolean.TRUE : null, 
             l == null ? null : Integer.parseInt( l.getText() ),
             s == null ? null : Integer.parseInt( s.getText() ),
             pk != null, 
-            order == null ? SortOrder.getDefault() : SortOrder.fromDDLValue(order.getText()) ); }
+            order == null ? SortOrder.getDefault() : SortOrder.fromDDLValue(order.getText()),
+            rr != null); }
     ;
 
 dyn_column_defs returns [List<ColumnDef> ret]
@@ -629,7 +655,8 @@ dyn_column_def returns [ColumnDef ret]
             l == null ? null : Integer.parseInt( l.getText() ),
             s == null ? null : Integer.parseInt( s.getText() ),
             false, 
-            SortOrder.getDefault()); }
+            SortOrder.getDefault(),
+            false); }
     ;
 
 dyn_column_name_or_def returns [ColumnDef ret]
@@ -638,7 +665,8 @@ dyn_column_name_or_def returns [ColumnDef ret]
             l == null ? null : Integer.parseInt( l.getText() ),
             s == null ? null : Integer.parseInt( s.getText() ),
             false, 
-            SortOrder.getDefault()); }
+            SortOrder.getDefault(),
+            false); }
     ;
 
 subquery_expression returns [ParseNode ret]
@@ -653,7 +681,7 @@ single_select returns [SelectStatement ret]
         (WHERE where=expression)?
         (GROUP BY group=group_by)?
         (HAVING having=expression)?
-        { ParseContext context = contextStack.peek(); $ret = factory.select(from, h, d!=null, sel, where, group, having, null, null, getBindCount(), context.isAggregate(), context.hasSequences(), null, new HashMap<String,UDFParseNode>(udfParseNodes)); }
+        { ParseContext context = contextStack.peek(); $ret = factory.select(from, h, d!=null, sel, where, group, having, null, null,null, getBindCount(), context.isAggregate(), context.hasSequences(), null, new HashMap<String,UDFParseNode>(udfParseNodes)); }
     ;
 finally{ contextStack.pop(); }
 
@@ -668,7 +696,9 @@ select_node returns [SelectStatement ret]
     :   u=unioned_selects
         (ORDER BY order=order_by)?
         (LIMIT l=limit)?
-        { ParseContext context = contextStack.peek(); $ret = factory.select(u, order, l, getBindCount(), context.isAggregate()); }
+        (OFFSET o=offset (ROW | ROWS)?)?
+        (FETCH (FIRST | NEXT) (l=limit)? (ROW | ROWS) ONLY)?
+        { ParseContext context = contextStack.peek(); $ret = factory.select(u, order, l, o, getBindCount(), context.isAggregate()); }
     ;
 finally{ contextStack.pop(); }
 
@@ -700,6 +730,11 @@ limit returns [LimitNode ret]
     | l=int_or_long_literal { $ret = factory.limit(l); }
     ;
     
+offset returns [OffsetNode ret]
+	: b=bind_expression { $ret = factory.offset(b); }
+    | l=int_or_long_literal { $ret = factory.offset(l); }
+    ;
+
 sampling_rate returns [LiteralParseNode ret]
     : l=literal { $ret = l; }
     ;
@@ -898,6 +933,11 @@ multiply_divide_modulo_expression returns [ParseNode ret]
             }
         )*
         { $ret = lhs; }
+    ;
+
+use_schema_node returns [UseSchemaStatement ret]
+	:   USE s=identifier
+        {ret = factory.useSchema(s); }
     ;
 
 negate_expression returns [ParseNode ret]
@@ -1248,14 +1288,14 @@ DIGIT
 STRING_LITERAL
 @init{ StringBuilder sb = new StringBuilder(); }
     :   '\''
-    ( t=CHAR { sb.append(t.getText()); }
+    ( t=CHAR { sb.append(t.getText()); } 
     | t=CHAR_ESC { sb.append(getText()); }
     )* '\'' { setText(sb.toString()); }
     ;
 
 fragment
 CHAR
-    :   ( ~('\'' | '\\') )+
+    :   ( ~('\'' | '\\') )
     ;
 
 fragment
@@ -1277,6 +1317,7 @@ CHAR_ESC
         | '\\'  { setText("\\"); }
         | '_'   { setText("\\_"); }
         | '%'   { setText("\\\%"); }
+        |       { setText("\\"); }
         )
     |   '\'\''  { setText("\'"); }
     ;

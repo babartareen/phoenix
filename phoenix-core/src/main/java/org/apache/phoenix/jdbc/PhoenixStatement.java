@@ -34,22 +34,24 @@ import java.text.Format;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hbase.client.Consistency;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.phoenix.call.CallRunner;
+import org.apache.phoenix.compile.BaseMutationPlan;
 import org.apache.phoenix.compile.ColumnProjector;
 import org.apache.phoenix.compile.ColumnResolver;
 import org.apache.phoenix.compile.CreateFunctionCompiler;
 import org.apache.phoenix.compile.CreateIndexCompiler;
+import org.apache.phoenix.compile.CreateSchemaCompiler;
 import org.apache.phoenix.compile.CreateSequenceCompiler;
 import org.apache.phoenix.compile.CreateTableCompiler;
 import org.apache.phoenix.compile.DeleteCompiler;
@@ -57,7 +59,6 @@ import org.apache.phoenix.compile.DropSequenceCompiler;
 import org.apache.phoenix.compile.ExplainPlan;
 import org.apache.phoenix.compile.ExpressionProjector;
 import org.apache.phoenix.compile.FromCompiler;
-import org.apache.phoenix.compile.SequenceManager;
 import org.apache.phoenix.compile.GroupByCompiler.GroupBy;
 import org.apache.phoenix.compile.ListJarsQueryPlan;
 import org.apache.phoenix.compile.MutationPlan;
@@ -65,6 +66,7 @@ import org.apache.phoenix.compile.OrderByCompiler.OrderBy;
 import org.apache.phoenix.compile.QueryCompiler;
 import org.apache.phoenix.compile.QueryPlan;
 import org.apache.phoenix.compile.RowProjector;
+import org.apache.phoenix.compile.SequenceManager;
 import org.apache.phoenix.compile.StatementContext;
 import org.apache.phoenix.compile.StatementNormalizer;
 import org.apache.phoenix.compile.StatementPlan;
@@ -91,6 +93,7 @@ import org.apache.phoenix.parse.ColumnDef;
 import org.apache.phoenix.parse.ColumnName;
 import org.apache.phoenix.parse.CreateFunctionStatement;
 import org.apache.phoenix.parse.CreateIndexStatement;
+import org.apache.phoenix.parse.CreateSchemaStatement;
 import org.apache.phoenix.parse.CreateSequenceStatement;
 import org.apache.phoenix.parse.CreateTableStatement;
 import org.apache.phoenix.parse.DeleteJarStatement;
@@ -98,6 +101,7 @@ import org.apache.phoenix.parse.DeleteStatement;
 import org.apache.phoenix.parse.DropColumnStatement;
 import org.apache.phoenix.parse.DropFunctionStatement;
 import org.apache.phoenix.parse.DropIndexStatement;
+import org.apache.phoenix.parse.DropSchemaStatement;
 import org.apache.phoenix.parse.DropSequenceStatement;
 import org.apache.phoenix.parse.DropTableStatement;
 import org.apache.phoenix.parse.ExplainStatement;
@@ -109,6 +113,7 @@ import org.apache.phoenix.parse.ListJarsStatement;
 import org.apache.phoenix.parse.LiteralParseNode;
 import org.apache.phoenix.parse.NamedNode;
 import org.apache.phoenix.parse.NamedTableNode;
+import org.apache.phoenix.parse.OffsetNode;
 import org.apache.phoenix.parse.OrderByNode;
 import org.apache.phoenix.parse.PFunction;
 import org.apache.phoenix.parse.ParseNode;
@@ -122,6 +127,7 @@ import org.apache.phoenix.parse.TraceStatement;
 import org.apache.phoenix.parse.UDFParseNode;
 import org.apache.phoenix.parse.UpdateStatisticsStatement;
 import org.apache.phoenix.parse.UpsertStatement;
+import org.apache.phoenix.parse.UseSchemaStatement;
 import org.apache.phoenix.query.HBaseFactoryProvider;
 import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.query.QueryConstants;
@@ -160,6 +166,7 @@ import org.slf4j.LoggerFactory;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
+import com.google.common.math.IntMath;
 /**
  * 
  * JDBC Statement implementation of Phoenix.
@@ -178,7 +185,7 @@ import com.google.common.collect.Lists;
  * 
  * @since 0.1
  */
-public class PhoenixStatement implements Statement, SQLCloseable, org.apache.phoenix.jdbc.Jdbc7Shim.Statement {
+public class PhoenixStatement implements Statement, SQLCloseable {
 	
     private static final Logger logger = LoggerFactory.getLogger(PhoenixStatement.class);
     
@@ -214,17 +221,20 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
     private boolean isClosed = false;
     private int maxRows;
     private int fetchSize = -1;
-    private int queryTimeout;
+    private int queryTimeoutMillis;
     
     public PhoenixStatement(PhoenixConnection connection) {
         this.connection = connection;
-        this.queryTimeout = getDefaultQueryTimeout();
+        this.queryTimeoutMillis = getDefaultQueryTimeoutMillis();
     }
-    
-    private int getDefaultQueryTimeout() {
-        // Convert milliseconds to seconds by taking the CEIL up to the next second
-        return (connection.getQueryServices().getProps().getInt(QueryServices.THREAD_TIMEOUT_MS_ATTRIB, 
-            QueryServicesOptions.DEFAULT_THREAD_TIMEOUT_MS) + 999) / 1000;
+
+    /**
+     * Internally to Phoenix we allow callers to set the query timeout in millis
+     * via the phoenix.query.timeoutMs. Therefore we store the time in millis.
+     */
+    private int getDefaultQueryTimeoutMillis() {
+        return connection.getQueryServices().getProps().getInt(QueryServices.THREAD_TIMEOUT_MS_ATTRIB, 
+            QueryServicesOptions.DEFAULT_THREAD_TIMEOUT_MS);
     }
 
     protected List<PhoenixResultSet> getResultSets() {
@@ -258,9 +268,14 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                     public PhoenixResultSet call() throws SQLException {
                     final long startTime = System.currentTimeMillis();
                     try {
-                        QueryPlan plan = stmt.compilePlan(PhoenixStatement.this, Sequence.ValueOp.VALIDATE_SEQUENCE);
-                        plan = connection.getQueryServices().getOptimizer().optimize(
-                                PhoenixStatement.this, plan);
+						QueryPlan plan = stmt.compilePlan(PhoenixStatement.this, Sequence.ValueOp.VALIDATE_SEQUENCE);
+                        // Send mutations to hbase, so they are visible to subsequent reads.
+                        // Use original plan for data table so that data and immutable indexes will be sent
+                        // TODO: for joins, we need to iterate through all tables, but we need the original table,
+                        // not the projected table, so plan.getContext().getResolver().getTables() won't work.
+                        Iterator<TableRef> tableRefs = plan.getSourceRefs().iterator();
+                        connection.getMutationState().sendUncommitted(tableRefs);
+                        plan = connection.getQueryServices().getOptimizer().optimize(PhoenixStatement.this, plan);
                          // this will create its own trace internally, so we don't wrap this
                          // whole thing in tracing
                         ResultIterator resultIterator = plan.iterator();
@@ -276,6 +291,10 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                         setLastResultSet(rs);
                         setLastUpdateCount(NO_UPDATE);
                         setLastUpdateOperation(stmt.getOperation());
+                        // If transactional, this will move the read pointer forward
+                        if (connection.getAutoCommit()) {
+                            connection.commit();
+                        }
                         connection.incrementStatementExecutionCounter();
                         return rs;
                     } catch (RuntimeException e) {
@@ -312,13 +331,17 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                         new CallRunner.CallableThrowable<Integer, SQLException>() {
                         @Override
                             public Integer call() throws SQLException {
-                            // Note that the upsert select statements will need to commit any open transaction here,
-                            // since they'd update data directly from coprocessors, and should thus operate on
-                            // the latest state
                             try {
+                                MutationState state = connection.getMutationState();
                                 MutationPlan plan = stmt.compilePlan(PhoenixStatement.this, Sequence.ValueOp.VALIDATE_SEQUENCE);
-                                MutationState state = plan.execute();
-                                connection.getMutationState().join(state);
+                                if (plan.getTargetRef() != null && plan.getTargetRef().getTable() != null && plan.getTargetRef().getTable().isTransactional()) {
+                                    state.startTransaction();
+                                }
+                                Iterator<TableRef> tableRefs = plan.getSourceRefs().iterator();
+                                state.sendUncommitted(tableRefs);
+                                state.checkpointIfNeccessary(plan);
+                                MutationState lastState = plan.execute();
+                                state.join(lastState);
                                 if (connection.getAutoCommit()) {
                                     connection.commit();
                                 }
@@ -326,7 +349,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                                 setLastQueryPlan(null);
                                 // Unfortunately, JDBC uses an int for update count, so we
                                 // just max out at Integer.MAX_VALUE
-                                int lastUpdateCount = (int) Math.min(Integer.MAX_VALUE, state.getUpdateCount());
+                                int lastUpdateCount = (int) Math.min(Integer.MAX_VALUE, lastState.getUpdateCount());
                                 setLastUpdateCount(lastUpdateCount);
                                 setLastUpdateOperation(stmt.getOperation());
                                 connection.incrementStatementExecutionCounter();
@@ -354,14 +377,14 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
     
     private static class ExecutableSelectStatement extends SelectStatement implements CompilableStatement {
         private ExecutableSelectStatement(TableNode from, HintNode hint, boolean isDistinct, List<AliasedNode> select, ParseNode where,
-                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit, int bindCount, boolean isAggregate, boolean hasSequence, Map<String, UDFParseNode> udfParseNodes) {
-            this(from, hint, isDistinct, select, where, groupBy, having, orderBy, limit, bindCount, isAggregate, hasSequence, Collections.<SelectStatement>emptyList(), udfParseNodes);
+                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit,OffsetNode offset, int bindCount, boolean isAggregate, boolean hasSequence, Map<String, UDFParseNode> udfParseNodes) {
+            this(from, hint, isDistinct, select, where, groupBy, having, orderBy, limit,offset, bindCount, isAggregate, hasSequence, Collections.<SelectStatement>emptyList(), udfParseNodes);
         }
 
         private ExecutableSelectStatement(TableNode from, HintNode hint, boolean isDistinct, List<AliasedNode> select, ParseNode where,
-                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit, int bindCount, boolean isAggregate,
+                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit,OffsetNode offset, int bindCount, boolean isAggregate,
                 boolean hasSequence, List<SelectStatement> selects, Map<String, UDFParseNode> udfParseNodes) {
-            super(from, hint, isDistinct, select, where, groupBy, having, orderBy, limit, bindCount, isAggregate, hasSequence, selects, udfParseNodes);
+            super(from, hint, isDistinct, select, where, groupBy, having, orderBy, limit, offset, bindCount, isAggregate, hasSequence, selects, udfParseNodes);
         }
         
         @SuppressWarnings("unchecked")
@@ -468,6 +491,11 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 }
 
                 @Override
+                public ResultIterator iterator(ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
+                    return iterator;
+                }
+
+                @Override
                 public long getEstimatedSize() {
                     return 0;
                 }
@@ -478,12 +506,22 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 }
 
                 @Override
+                public Set<TableRef> getSourceRefs() {
+                    return Collections.emptySet();
+                }
+
+                @Override
                 public RowProjector getProjector() {
                     return EXPLAIN_PLAN_ROW_PROJECTOR;
                 }
 
                 @Override
                 public Integer getLimit() {
+                    return null;
+                }
+
+                @Override
+                public Integer getOffset() {
                     return null;
                 }
 
@@ -527,6 +565,10 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                     return true;
                 }
 
+				@Override
+				public Operation getOperation() {
+					return this.getOperation();
+				}
                 @Override
                 public boolean useRoundRobinIterator() throws SQLException {
                     return false;
@@ -547,7 +589,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
             if(!getUdfParseNodes().isEmpty()) {
                 stmt.throwIfUnallowedUserDefinedFunctions(getUdfParseNodes());
             }
-            UpsertCompiler compiler = new UpsertCompiler(stmt);
+			UpsertCompiler compiler = new UpsertCompiler(stmt, this.getOperation());
             MutationPlan plan = compiler.compile(this);
             plan.getContext().getSequenceManager().validateSequences(seqAction);
             return plan;
@@ -565,7 +607,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
             if(!getUdfParseNodes().isEmpty()) {
                 stmt.throwIfUnallowedUserDefinedFunctions(getUdfParseNodes());
             }
-            DeleteCompiler compiler = new DeleteCompiler(stmt);
+		    DeleteCompiler compiler = new DeleteCompiler(stmt, this.getOperation());
             MutationPlan plan = compiler.compile(this);
             plan.getContext().getSequenceManager().validateSequences(seqAction);
             return plan;
@@ -582,7 +624,20 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @SuppressWarnings("unchecked")
         @Override
         public MutationPlan compilePlan(PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
-            CreateTableCompiler compiler = new CreateTableCompiler(stmt);
+            CreateTableCompiler compiler = new CreateTableCompiler(stmt, this.getOperation());
+            return compiler.compile(this);
+        }
+    }
+
+    private static class ExecutableCreateSchemaStatement extends CreateSchemaStatement implements CompilableStatement {
+        ExecutableCreateSchemaStatement(String schemaName, boolean ifNotExists) {
+            super(schemaName, ifNotExists);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public MutationPlan compilePlan(PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
+            CreateSchemaCompiler compiler = new CreateSchemaCompiler(stmt);
             return compiler.compile(this);
         }
     }
@@ -613,12 +668,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
                 final StatementContext context = new StatementContext(stmt);
-                return new MutationPlan() {
-
-                    @Override
-                    public StatementContext getContext() {
-                        return context;
-                    }
+                return new BaseMutationPlan(context, this.getOperation()) {
 
                     @Override
                     public ParameterMetaData getParameterMetaData() {
@@ -627,17 +677,12 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
 
                     @Override
                     public ExplainPlan getExplainPlan() throws SQLException {
-                        return new ExplainPlan(Collections.singletonList("DROP TABLE"));
-                    }
-
-                    @Override
-                    public PhoenixConnection getConnection() {
-                        return stmt.getConnection();
+                        return new ExplainPlan(Collections.singletonList("DROP FUNCTION"));
                     }
 
                     @Override
                     public MutationState execute() throws SQLException {
-                        MetaDataClient client = new MetaDataClient(getConnection());
+                        MetaDataClient client = new MetaDataClient(getContext().getConnection());
                         return client.dropFunction(ExecutableDropFunctionStatement.this);
                     }
                 };
@@ -655,12 +700,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
+            return new BaseMutationPlan(context, this.getOperation()) {
 
                 @Override
                 public ParameterMetaData getParameterMetaData() {
@@ -670,11 +710,6 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
                     return new ExplainPlan(Collections.singletonList("ADD JARS"));
-                }
-
-                @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
                 }
 
                 @Override
@@ -723,12 +758,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
+            return new BaseMutationPlan(context, this.getOperation()) {
 
                 @Override
                 public ParameterMetaData getParameterMetaData() {
@@ -738,11 +768,6 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
                     return new ExplainPlan(Collections.singletonList("DELETE JAR"));
-                }
-
-                @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
                 }
 
                 @Override
@@ -803,7 +828,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
             if(!getUdfParseNodes().isEmpty()) {
                 stmt.throwIfUnallowedUserDefinedFunctions(getUdfParseNodes());
             }
-            CreateIndexCompiler compiler = new CreateIndexCompiler(stmt);
+			CreateIndexCompiler compiler = new CreateIndexCompiler(stmt, this.getOperation());
             return compiler.compile(this);
         }
     }
@@ -820,7 +845,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
 		@SuppressWarnings("unchecked")
         @Override
 		public MutationPlan compilePlan(PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
-		    CreateSequenceCompiler compiler = new CreateSequenceCompiler(stmt);
+		    CreateSequenceCompiler compiler = new CreateSequenceCompiler(stmt, this.getOperation());
             return compiler.compile(this);
 		}
 	}
@@ -835,7 +860,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @SuppressWarnings("unchecked")
         @Override
         public MutationPlan compilePlan(PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
-            DropSequenceCompiler compiler = new DropSequenceCompiler(stmt);
+            DropSequenceCompiler compiler = new DropSequenceCompiler(stmt, this.getOperation());
             return compiler.compile(this);
         }
     }
@@ -850,17 +875,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
-
-                @Override
-                public ParameterMetaData getParameterMetaData() {
-                    return PhoenixParameterMetaData.EMPTY_PARAMETER_META_DATA;
-                }
+            return new BaseMutationPlan(context, this.getOperation()) {
 
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
@@ -868,14 +883,61 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 }
 
                 @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
+                public MutationState execute() throws SQLException {
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
+                    return client.dropTable(ExecutableDropTableStatement.this);
+                }
+            };
+        }
+    }
+
+    private static class ExecutableDropSchemaStatement extends DropSchemaStatement implements CompilableStatement {
+
+        ExecutableDropSchemaStatement(String schemaName, boolean ifExists, boolean cascade) {
+            super(schemaName, ifExists, cascade);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
+            final StatementContext context = new StatementContext(stmt);
+            return new BaseMutationPlan(context, this.getOperation()) {
+
+                @Override
+                public ExplainPlan getExplainPlan() throws SQLException {
+                    return new ExplainPlan(Collections.singletonList("DROP SCHEMA"));
                 }
 
                 @Override
                 public MutationState execute() throws SQLException {
-                    MetaDataClient client = new MetaDataClient(getConnection());
-                    return client.dropTable(ExecutableDropTableStatement.this);
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
+                    return client.dropSchema(ExecutableDropSchemaStatement.this);
+                }
+            };
+        }
+    }
+
+    private static class ExecutableUseSchemaStatement extends UseSchemaStatement implements CompilableStatement {
+
+        ExecutableUseSchemaStatement(String schemaName) {
+            super(schemaName);
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
+            final StatementContext context = new StatementContext(stmt);
+            return new BaseMutationPlan(context, this.getOperation()) {
+
+                @Override
+                public ExplainPlan getExplainPlan() throws SQLException {
+                    return new ExplainPlan(Collections.singletonList("USE SCHEMA"));
+                }
+
+                @Override
+                public MutationState execute() throws SQLException {
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
+                    return client.useSchema(ExecutableUseSchemaStatement.this);
                 }
             };
         }
@@ -891,31 +953,16 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-                
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
+            return new BaseMutationPlan(context, this.getOperation()) {
 
-               @Override
-                public ParameterMetaData getParameterMetaData() {
-                    return PhoenixParameterMetaData.EMPTY_PARAMETER_META_DATA;
-                }
-                
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
                     return new ExplainPlan(Collections.singletonList("DROP INDEX"));
                 }
 
                 @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
-                }
-
-                @Override
                 public MutationState execute() throws SQLException {
-                    MetaDataClient client = new MetaDataClient(getConnection());
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
                     return client.dropIndex(ExecutableDropIndexStatement.this);
                 }
             };
@@ -932,31 +979,15 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-                
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
-
-                @Override
-                public ParameterMetaData getParameterMetaData() {
-                    return PhoenixParameterMetaData.EMPTY_PARAMETER_META_DATA;
-                }
-                
+            return new BaseMutationPlan(context, this.getOperation()) {
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
                     return new ExplainPlan(Collections.singletonList("ALTER INDEX"));
                 }
 
                 @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
-                }
-
-                @Override
                 public MutationState execute() throws SQLException {
-                    MetaDataClient client = new MetaDataClient(getConnection());
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
                     return client.alterIndex(ExecutableAlterIndexStatement.this);
                 }
             };
@@ -986,7 +1017,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
+            return new BaseMutationPlan(context, this.getOperation()) {
 
                 @Override
                 public StatementContext getContext() {
@@ -1003,19 +1034,15 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                     return new ExplainPlan(Collections.singletonList("ALTER SESSION"));
                 }
 
-                @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
-                }
 
                 @Override
                 public MutationState execute() throws SQLException {
                     Object consistency = getProps().get(PhoenixRuntime.CONSISTENCY_ATTRIB.toUpperCase());
                     if(consistency != null) {
                         if (((String)consistency).equalsIgnoreCase(Consistency.TIMELINE.toString())){
-                            getConnection().setConsistency(Consistency.TIMELINE);
+                            getContext().getConnection().setConsistency(Consistency.TIMELINE);
                         } else {
-                            getConnection().setConsistency(Consistency.STRONG);
+                        	getContext().getConnection().setConsistency(Consistency.STRONG);
                         }
                     }
                     return new MutationState(0, context.getConnection());
@@ -1034,17 +1061,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
-
-                @Override
-                public ParameterMetaData getParameterMetaData() {
-                    return PhoenixParameterMetaData.EMPTY_PARAMETER_META_DATA;
-                }
+            return new BaseMutationPlan(context, this.getOperation()) {
 
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
@@ -1052,13 +1069,8 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 }
 
                 @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
-                }
-
-                @Override
                 public MutationState execute() throws SQLException {
-                    MetaDataClient client = new MetaDataClient(getConnection());
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
                     return client.updateStatistics(ExecutableUpdateStatisticsStatement.this);
                 }
             };
@@ -1076,17 +1088,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
-
-                @Override
-                public ParameterMetaData getParameterMetaData() {
-                    return PhoenixParameterMetaData.EMPTY_PARAMETER_META_DATA;
-                }
+            return new BaseMutationPlan(context, this.getOperation()) {
 
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
@@ -1094,13 +1096,8 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 }
 
                 @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
-                }
-
-                @Override
                 public MutationState execute() throws SQLException {
-                    MetaDataClient client = new MetaDataClient(getConnection());
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
                     return client.addColumn(ExecutableAddColumnStatement.this);
                 }
             };
@@ -1117,17 +1114,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public MutationPlan compilePlan(final PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
             final StatementContext context = new StatementContext(stmt);
-            return new MutationPlan() {
-
-                @Override
-                public StatementContext getContext() {
-                    return context;
-                }
-
-               @Override
-                public ParameterMetaData getParameterMetaData() {
-                    return new PhoenixParameterMetaData(0);
-                }
+            return new BaseMutationPlan(context, this.getOperation()) {
 
                 @Override
                 public ExplainPlan getExplainPlan() throws SQLException {
@@ -1135,13 +1122,8 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 }
 
                 @Override
-                public PhoenixConnection getConnection() {
-                    return stmt.getConnection();
-                }
-
-                @Override
                 public MutationState execute() throws SQLException {
-                    MetaDataClient client = new MetaDataClient(getConnection());
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
                     return client.dropColumn(ExecutableDropColumnStatement.this);
                 }
             };
@@ -1151,10 +1133,10 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
     protected static class ExecutableNodeFactory extends ParseNodeFactory {
         @Override
         public ExecutableSelectStatement select(TableNode from, HintNode hint, boolean isDistinct, List<AliasedNode> select, ParseNode where,
-                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit, int bindCount, boolean isAggregate,
+                List<ParseNode> groupBy, ParseNode having, List<OrderByNode> orderBy, LimitNode limit, OffsetNode offset, int bindCount, boolean isAggregate,
                 boolean hasSequence, List<SelectStatement> selects, Map<String, UDFParseNode> udfParseNodes) {
             return new ExecutableSelectStatement(from, hint, isDistinct, select, where, groupBy == null ? Collections.<ParseNode>emptyList() : groupBy,
-                    having, orderBy == null ? Collections.<OrderByNode>emptyList() : orderBy, limit, bindCount, isAggregate, hasSequence, selects == null ? Collections.<SelectStatement>emptyList() : selects, udfParseNodes);
+                    having, orderBy == null ? Collections.<OrderByNode>emptyList() : orderBy, limit, offset, bindCount, isAggregate, hasSequence, selects == null ? Collections.<SelectStatement>emptyList() : selects, udfParseNodes);
         }
 
         @Override
@@ -1172,7 +1154,12 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 List<ParseNode> splits, PTableType tableType, boolean ifNotExists, TableName baseTableName, ParseNode tableTypeIdNode, int bindCount) {
             return new ExecutableCreateTableStatement(tableName, props, columns, pkConstraint, splits, tableType, ifNotExists, baseTableName, tableTypeIdNode, bindCount);
         }
-        
+
+        @Override
+        public CreateSchemaStatement createSchema(String schemaName, boolean ifNotExists) {
+            return new ExecutableCreateSchemaStatement(schemaName, ifNotExists);
+        }
+
         @Override
         public CreateSequenceStatement createSequence(TableName tableName, ParseNode startsWith,
                 ParseNode incrementBy, ParseNode cacheSize, ParseNode minValue, ParseNode maxValue,
@@ -1226,6 +1213,16 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
         @Override
         public DropTableStatement dropTable(TableName tableName, PTableType tableType, boolean ifExists, boolean cascade) {
             return new ExecutableDropTableStatement(tableName, tableType, ifExists, cascade);
+        }
+
+        @Override
+        public DropSchemaStatement dropSchema(String schemaName, boolean ifExists, boolean cascade) {
+            return new ExecutableDropSchemaStatement(schemaName, ifExists, cascade);
+        }
+
+        @Override
+        public UseSchemaStatement useSchema(String schemaName) {
+            return new ExecutableUseSchemaStatement(schemaName);
         }
 
         @Override
@@ -1315,6 +1312,8 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 PhoenixPreparedStatement statement = batch.get(i);
                 returnCodes[i] = statement.execute(true) ? Statement.SUCCESS_NO_INFO : statement.getUpdateCount();
             }
+            // Flush all changes in batch if auto flush is true
+            flushIfNecessary();
             // If we make it all the way through, clear the batch
             clearBatch();
             return returnCodes;
@@ -1419,9 +1418,17 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
             throw new SQLExceptionInfo.Builder(SQLExceptionCode.EXECUTE_UPDATE_WITH_NON_EMPTY_BATCH)
             .build().buildException();
         }
-        return executeMutation(stmt);
+        int updateCount = executeMutation(stmt);
+        flushIfNecessary();
+        return updateCount;
     }
 
+    private void flushIfNecessary() throws SQLException {
+        if (connection.getAutoFlush()) {
+            connection.flush();
+        }
+    }
+    
     @Override
     public boolean execute(String sql) throws SQLException {
         CompilableStatement stmt = parseStatement(sql);
@@ -1431,6 +1438,7 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
                 .build().buildException();
             }
             executeMutation(stmt);
+            flushIfNecessary();
             return false;
         }
         executeQuery(stmt);
@@ -1439,32 +1447,32 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
 
     @Override
     public boolean execute(String sql, int autoGeneratedKeys) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        return execute(sql);
     }
 
     @Override
     public boolean execute(String sql, int[] columnIndexes) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        return execute(sql);
     }
 
     @Override
     public boolean execute(String sql, String[] columnNames) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        return execute(sql);
     }
 
     @Override
     public int executeUpdate(String sql, int autoGeneratedKeys) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        return executeUpdate(sql);
     }
 
     @Override
     public int executeUpdate(String sql, int[] columnIndexes) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        return executeUpdate(sql);
     }
 
     @Override
     public int executeUpdate(String sql, String[] columnNames) throws SQLException {
-        throw new SQLFeatureNotSupportedException();
+        return executeUpdate(sql);
     }
 
     @Override
@@ -1608,21 +1616,45 @@ public class PhoenixStatement implements Statement, SQLCloseable, org.apache.pho
     }
 
     @Override
+    /**
+     * When setting the query timeout via JDBC timeouts must be expressed in seconds. Therefore
+     * we need to convert the default timeout to milliseconds for internal use. 
+     */
     public void setQueryTimeout(int seconds) throws SQLException {
         if (seconds < 0) {
-            this.queryTimeout = getDefaultQueryTimeout();
+            this.queryTimeoutMillis = getDefaultQueryTimeoutMillis();
         } else if (seconds == 0) {
-            this.queryTimeout = Integer.MAX_VALUE;
+            this.queryTimeoutMillis = Integer.MAX_VALUE;
         } else {
-            this.queryTimeout = seconds;
+            this.queryTimeoutMillis = seconds * 1000;
         }
     }
 
     @Override
+    /**
+     * When getting the query timeout via JDBC timeouts must be expressed in seconds. Therefore
+     * we need to convert the default millisecond timeout to seconds. 
+     */
     public int getQueryTimeout() throws SQLException {
-        return queryTimeout;
+        // Convert milliseconds to seconds by taking the CEIL up to the next second
+        int scaledValue;
+        try {
+            scaledValue = IntMath.checkedAdd(queryTimeoutMillis, 999);
+        } catch (ArithmeticException e) {
+            scaledValue = Integer.MAX_VALUE;
+        }
+        return scaledValue / 1000;
     }
-
+    
+    /**
+     * Returns the configured timeout in milliseconds. This
+     * internally enables the of use millisecond timeout granularity
+     * and honors the exact value configured by phoenix.query.timeoutMs.
+     */
+    public int getQueryTimeoutInMillis() {
+        return queryTimeoutMillis;
+    }
+    
     @Override
     public boolean isWrapperFor(Class<?> iface) throws SQLException {
         return iface.isInstance(this);

@@ -18,6 +18,7 @@
 
 package org.apache.phoenix.pherf.result;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.phoenix.pherf.PherfConstants;
 import org.apache.phoenix.pherf.result.file.ResultFileDetails;
 import org.apache.phoenix.pherf.result.impl.CSVFileResultHandler;
@@ -51,8 +52,8 @@ public class ResultUtil {
         try {
             if (!dataLoadThreadTime.getThreadTime().isEmpty()) {
                 writer = new CSVFileResultHandler();
-                writer.setResultFileName("Data_Load_Details");
                 writer.setResultFileDetails(ResultFileDetails.CSV);
+                writer.setResultFileName("Data_Load_Details");
 
                 for (WriteThreadTime writeThreadTime : dataLoadThreadTime.getThreadTime()) {
                     List<ResultValue> rowValues = new ArrayList<>();
@@ -83,15 +84,24 @@ public class ResultUtil {
         ensureBaseResultDirExists();
 
         CSVResultHandler writer = null;
-        ResultFileDetails resultFileDetails = ResultFileDetails.CSV_AGGREGATE_DATA_LOAD;
+        ResultFileDetails resultFileDetails;
+        if (PhoenixUtil.isThinDriver()) {
+            resultFileDetails = ResultFileDetails.CSV_THIN_AGGREGATE_DATA_LOAD;
+        } else {
+            resultFileDetails = ResultFileDetails.CSV_AGGREGATE_DATA_LOAD;
+        }
         try {
             writer = new CSVFileResultHandler();
-            writer.setResultFileName("Data_Load_Summary");
             writer.setResultFileDetails(resultFileDetails);
+            writer.setResultFileName("Data_Load_Summary");
 
             for (TableLoadTime loadTime : dataLoadTime.getTableLoadTime()) {
                 List<ResultValue> rowValues = new ArrayList<>();
-                rowValues.add(new ResultValue(PhoenixUtil.getZookeeper()));
+                if (PhoenixUtil.isThinDriver()) {
+                    rowValues.add(new ResultValue(PhoenixUtil.getQueryServerUrl()));
+                } else {
+                    rowValues.add(new ResultValue(PhoenixUtil.getZookeeper()));
+                }
                 rowValues.addAll(loadTime.getCsvRepresentation(this));
                 Result
                         result =
@@ -148,14 +158,25 @@ public class ResultUtil {
             baseDir.mkdir();
         }
     }
+    
+    /**
+     * Utility method to delete directory
+     * @throws IOException 
+     */
+    public void deleteDir(String directory) throws IOException {
+        File baseDir = new File(directory);
+        if (baseDir.exists()) {
+            FileUtils.deleteDirectory(baseDir);
+        }
+    }
 
     public String getSuffix() {
         if (null == FILE_SUFFIX) {
             Date date = new Date();
             Format formatter = new SimpleDateFormat("YYYY-MM-dd_hh-mm-ss");
-            FILE_SUFFIX = "_" + formatter.format(date);
+            FILE_SUFFIX = formatter.format(date);
         }
-        return FILE_SUFFIX;
+        return "_" + FILE_SUFFIX;
     }
 
     public String convertNull(String str) {
@@ -235,5 +256,13 @@ public class ResultUtil {
             sb.append(entry.getKey() + "=" + entry.getValue());
         }
         return sb.toString();
+    }
+    
+    /**
+     * Set the file suffix
+     * @param suffix
+     */
+    public static void setFileSuffix(String suffix) {
+    	FILE_SUFFIX = suffix;
     }
 }

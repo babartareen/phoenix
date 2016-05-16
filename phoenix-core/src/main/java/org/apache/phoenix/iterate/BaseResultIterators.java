@@ -17,11 +17,18 @@
  */
 package org.apache.phoenix.iterate;
 
-import static org.apache.phoenix.coprocessor.BaseScannerRegionObserver.EXPECTED_UPPER_REGION_KEY;
+import static org.apache.phoenix.coprocessor.BaseScannerRegionObserver.SCAN_ACTUAL_START_ROW;
+import static org.apache.phoenix.coprocessor.BaseScannerRegionObserver.SCAN_START_ROW_SUFFIX;
+import static org.apache.phoenix.coprocessor.BaseScannerRegionObserver.SCAN_STOP_ROW_SUFFIX;
+
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_FAILED_QUERY_COUNTER;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_QUERY_TIMEOUT_COUNTER;
 import static org.apache.phoenix.util.ByteUtil.EMPTY_BYTE_ARRAY;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInput;
+import java.io.DataInputStream;
+import java.io.EOFException;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,6 +52,7 @@ import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.filter.PageFilter;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.phoenix.compile.QueryPlan;
@@ -55,8 +63,11 @@ import org.apache.phoenix.coprocessor.BaseScannerRegionObserver;
 import org.apache.phoenix.coprocessor.UngroupedAggregateRegionObserver;
 import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
+import org.apache.phoenix.execute.MutationState;
+import org.apache.phoenix.execute.ScanPlan;
 import org.apache.phoenix.filter.ColumnProjectionFilter;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
+import org.apache.phoenix.hbase.index.util.VersionUtil;
 import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.parse.HintNode.Hint;
 import org.apache.phoenix.query.ConnectionQueryServices;
@@ -73,7 +84,11 @@ import org.apache.phoenix.schema.StaleRegionBoundaryCacheException;
 import org.apache.phoenix.schema.TableRef;
 import org.apache.phoenix.schema.stats.GuidePostsInfo;
 import org.apache.phoenix.schema.stats.PTableStats;
+import org.apache.phoenix.util.ByteUtil;
+import org.apache.phoenix.util.Closeables;
 import org.apache.phoenix.util.LogUtil;
+import org.apache.phoenix.util.PrefixByteCodec;
+import org.apache.phoenix.util.PrefixByteDecoder;
 import org.apache.phoenix.util.SQLCloseables;
 import org.apache.phoenix.util.ScanUtil;
 import org.apache.phoenix.util.SchemaUtil;
@@ -97,16 +112,22 @@ import com.google.common.collect.Lists;
 public abstract class BaseResultIterators extends ExplainTable implements ResultIterators {
 	private static final Logger logger = LoggerFactory.getLogger(BaseResultIterators.class);
     private static final int ESTIMATED_GUIDEPOSTS_PER_REGION = 20;
+    private static final int MIN_SEEK_TO_COLUMN_VERSION = VersionUtil.encodeVersion("0", "98", "12");
 
     private final List<List<Scan>> scans;
     private final List<KeyRange> splits;
     private final PTableStats tableStats;
     private final byte[] physicalTableName;
-    private final QueryPlan plan;
+    protected final QueryPlan plan;
     protected final String scanId;
-    private final ParallelScanGrouper scanGrouper;
+    protected final MutationState mutationState;
+    protected final ParallelScanGrouper scanGrouper;
     // TODO: too much nesting here - breakup into new classes.
     private final List<List<List<Pair<Scan,Future<PeekingResultIterator>>>>> allFutures;
+    private Long estimatedRows;
+    private Long estimatedSize;
+    private boolean hasGuidePosts;
+    private Scan scan;
     
     static final Function<HRegionLocation, KeyRange> TO_KEY_RANGE = new Function<HRegionLocation, KeyRange>() {
         @Override
@@ -120,7 +141,6 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
     }
     
     private boolean useStats() {
-        Scan scan = context.getScan();
         boolean isPointLookup = context.getScanRanges().isPointLookup();
         /*
          *  Don't use guide posts if:
@@ -135,11 +155,10 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         return true;
     }
     
-    private static void initializeScan(QueryPlan plan, Integer perScanLimit) {
+    private static void initializeScan(QueryPlan plan, Integer perScanLimit, Integer offset, Scan scan) {
         StatementContext context = plan.getContext();
         TableRef tableRef = plan.getTableRef();
         PTable table = tableRef.getTable();
-        Scan scan = context.getScan();
 
         Map<byte [], NavigableSet<byte []>> familyMap = scan.getFamilyMap();
         // Hack for PHOENIX-2067 to force raw scan over all KeyValues to fix their row keys
@@ -156,52 +175,173 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         } else {
             FilterableStatement statement = plan.getStatement();
             RowProjector projector = plan.getProjector();
-            boolean keyOnlyFilter = familyMap.isEmpty() && context.getWhereCoditionColumns().isEmpty();
-            if (projector.isProjectEmptyKeyValue()) {
+            boolean optimizeProjection = false;
+            boolean keyOnlyFilter = familyMap.isEmpty() && context.getWhereConditionColumns().isEmpty();
+            if (!projector.projectEverything()) {
                 // If nothing projected into scan and we only have one column family, just allow everything
                 // to be projected and use a FirstKeyOnlyFilter to skip from row to row. This turns out to
                 // be quite a bit faster.
                 // Where condition columns also will get added into familyMap
-                // When where conditions are present, we can not add FirstKeyOnlyFilter at beginning.
-                if (familyMap.isEmpty() && context.getWhereCoditionColumns().isEmpty()
-                        && table.getColumnFamilies().size() == 1) {
+                // When where conditions are present, we cannot add FirstKeyOnlyFilter at beginning.
+                // FIXME: we only enter this if the number of column families is 1 because otherwise
+                // local indexes break because it appears that the column families in the PTable do
+                // not match the actual column families of the table (which is bad).
+                if (keyOnlyFilter && table.getColumnFamilies().size() == 1) {
                     // Project the one column family. We must project a column family since it's possible
                     // that there are other non declared column families that we need to ignore.
                     scan.addFamily(table.getColumnFamilies().get(0).getName().getBytes());
                 } else {
-                    byte[] ecf = SchemaUtil.getEmptyColumnFamily(table);
-                    // Project empty key value unless the column family containing it has
-                    // been projected in its entirety.
-                    if (!familyMap.containsKey(ecf) || familyMap.get(ecf) != null) {
-                        scan.addColumn(ecf, QueryConstants.EMPTY_COLUMN_BYTES);
+                    optimizeProjection = true;
+                    if (projector.projectEveryRow()) {
+                        if (table.getViewType() == ViewType.MAPPED) {
+                            // Since we don't have the empty key value in MAPPED tables, 
+                            // we must project all CFs in HRS. However, only the
+                            // selected column values are returned back to client.
+                            context.getWhereConditionColumns().clear();
+                            for (PColumnFamily family : table.getColumnFamilies()) {
+                                context.addWhereCoditionColumn(family.getName().getBytes(), null);
+                            }
+                        } else {
+                            byte[] ecf = SchemaUtil.getEmptyColumnFamily(table);
+                            // Project empty key value unless the column family containing it has
+                            // been projected in its entirety.
+                            if (!familyMap.containsKey(ecf) || familyMap.get(ecf) != null) {
+                                scan.addColumn(ecf, QueryConstants.EMPTY_COLUMN_BYTES);
+                            }
+                        }
                     }
-                }
-            } else if (table.getViewType() == ViewType.MAPPED) {
-                // Since we don't have the empty key value in MAPPED tables, we must select all CFs in HRS. But only the
-                // selected column values are returned back to client
-                for (PColumnFamily family : table.getColumnFamilies()) {
-                    scan.addFamily(family.getName().getBytes());
                 }
             }
             // Add FirstKeyOnlyFilter if there are no references to key value columns
             if (keyOnlyFilter) {
                 ScanUtil.andFilterAtBeginning(scan, new FirstKeyOnlyFilter());
             }
-            
-            // TODO adding all CFs here is not correct. It should be done only after ColumnProjectionOptimization.
+
             if (perScanLimit != null) {
                 ScanUtil.andFilterAtEnd(scan, new PageFilter(perScanLimit));
             }
-    
-            doColumnProjectionOptimization(context, scan, table, statement);
+            
+            if(offset!=null){
+                ScanUtil.addOffsetAttribute(scan, offset);
+            }
+
+            if (optimizeProjection) {
+                optimizeProjection(context, scan, table, statement);
+            }
+        }
+    }
+
+    private static void optimizeProjection(StatementContext context, Scan scan, PTable table, FilterableStatement statement) {
+        Map<byte[], NavigableSet<byte[]>> familyMap = scan.getFamilyMap();
+        // columnsTracker contain cf -> qualifiers which should get returned.
+        Map<ImmutableBytesPtr, NavigableSet<ImmutableBytesPtr>> columnsTracker = 
+                new TreeMap<ImmutableBytesPtr, NavigableSet<ImmutableBytesPtr>>();
+        Set<byte[]> conditionOnlyCfs = new TreeSet<byte[]>(Bytes.BYTES_COMPARATOR);
+        int referencedCfCount = familyMap.size();
+        boolean filteredColumnNotInProjection = false;
+        for (Pair<byte[], byte[]> whereCol : context.getWhereConditionColumns()) {
+            byte[] filteredFamily = whereCol.getFirst();
+            if (!(familyMap.containsKey(filteredFamily))) {
+                referencedCfCount++;
+                filteredColumnNotInProjection = true;
+            } else if (!filteredColumnNotInProjection) {
+                NavigableSet<byte[]> projectedColumns = familyMap.get(filteredFamily);
+                if (projectedColumns != null) {
+                    byte[] filteredColumn = whereCol.getSecond();
+                    if (filteredColumn == null) {
+                        filteredColumnNotInProjection = true;
+                    } else {
+                        filteredColumnNotInProjection = !projectedColumns.contains(filteredColumn);
+                    }
+                }
+            }
+        }
+        boolean preventSeekToColumn;
+        if (statement.getHint().hasHint(Hint.SEEK_TO_COLUMN)) {
+            // Allow seeking to column during filtering
+            preventSeekToColumn = false;
+        } else if (statement.getHint().hasHint(Hint.NO_SEEK_TO_COLUMN)) {
+            // Prevent seeking to column during filtering
+            preventSeekToColumn = true;
+        } else {
+            int hbaseServerVersion = context.getConnection().getQueryServices().getLowestClusterHBaseVersion();
+            // When only a single column family is referenced, there are no hints, and HBase server version
+            // is less than when the fix for HBASE-13109 went in (0.98.12), then we prevent seeking to a
+            // column.
+            preventSeekToColumn = referencedCfCount == 1 && hbaseServerVersion < MIN_SEEK_TO_COLUMN_VERSION;
+        }
+        for (Entry<byte[], NavigableSet<byte[]>> entry : familyMap.entrySet()) {
+            ImmutableBytesPtr cf = new ImmutableBytesPtr(entry.getKey());
+            NavigableSet<byte[]> qs = entry.getValue();
+            NavigableSet<ImmutableBytesPtr> cols = null;
+            if (qs != null) {
+                cols = new TreeSet<ImmutableBytesPtr>();
+                for (byte[] q : qs) {
+                    cols.add(new ImmutableBytesPtr(q));
+                }
+            }
+            columnsTracker.put(cf, cols);
+        }
+        // Making sure that where condition CFs are getting scanned at HRS.
+        for (Pair<byte[], byte[]> whereCol : context.getWhereConditionColumns()) {
+            byte[] family = whereCol.getFirst();
+            if (preventSeekToColumn) {
+                if (!(familyMap.containsKey(family))) {
+                    conditionOnlyCfs.add(family);
+                }
+                scan.addFamily(family);
+            } else {
+                if (familyMap.containsKey(family)) {
+                    // where column's CF is present. If there are some specific columns added against this CF, we
+                    // need to ensure this where column also getting added in it.
+                    // If the select was like select cf1.*, then that itself will select the whole CF. So no need to
+                    // specifically add the where column. Adding that will remove the cf1.* stuff and only this
+                    // where condition column will get returned!
+                    NavigableSet<byte[]> cols = familyMap.get(family);
+                    // cols is null means the whole CF will get scanned.
+                    if (cols != null) {
+                        if (whereCol.getSecond() == null) {
+                            scan.addFamily(family);                            
+                        } else {
+                            scan.addColumn(family, whereCol.getSecond());
+                        }
+                    }
+                } else if (whereCol.getSecond() == null) {
+                    scan.addFamily(family);
+                } else {
+                    // where column's CF itself is not present in family map. We need to add the column
+                    scan.addColumn(family, whereCol.getSecond());
+                }
+            }
+        }
+        if (!columnsTracker.isEmpty()) {
+            if (preventSeekToColumn) {
+                for (ImmutableBytesPtr f : columnsTracker.keySet()) {
+                    // This addFamily will remove explicit cols in scan familyMap and make it as entire row.
+                    // We don't want the ExplicitColumnTracker to be used. Instead we have the ColumnProjectionFilter
+                    scan.addFamily(f.get());
+                }
+            }
+            // We don't need this filter for aggregates, as we're not returning back what's
+            // in the scan in this case. We still want the other optimization that causes
+            // the ExplicitColumnTracker not to be used, though.
+            if (!statement.isAggregate() && filteredColumnNotInProjection) {
+                ScanUtil.andFilterAtEnd(scan, new ColumnProjectionFilter(SchemaUtil.getEmptyColumnFamily(table),
+                        columnsTracker, conditionOnlyCfs));
+            }
         }
     }
     
-    public BaseResultIterators(QueryPlan plan, Integer perScanLimit, ParallelScanGrouper scanGrouper) throws SQLException {
-        super(plan.getContext(), plan.getTableRef(), plan.getGroupBy(), plan.getOrderBy(), plan.getStatement().getHint(), plan.getLimit());
+    public BaseResultIterators(QueryPlan plan, Integer perScanLimit, Integer offset, ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
+        super(plan.getContext(), plan.getTableRef(), plan.getGroupBy(), plan.getOrderBy(),
+                plan.getStatement().getHint(), plan.getLimit(), plan instanceof ScanPlan ? plan.getOffset() : null);
         this.plan = plan;
+        this.scan = scan;
         this.scanGrouper = scanGrouper;
         StatementContext context = plan.getContext();
+        // Clone MutationState as the one on the connection will change if auto commit is on
+        // yet we need the original one with the original transaction from TableResultIterator.
+        this.mutationState = new MutationState(context.getConnection().getMutationState());
         TableRef tableRef = plan.getTableRef();
         PTable table = tableRef.getTable();
         physicalTableName = table.getPhysicalName().getBytes();
@@ -209,7 +349,7 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         // Used to tie all the scans together during logging
         scanId = UUID.randomUUID().toString();
         
-        initializeScan(plan, perScanLimit);
+        initializeScan(plan, perScanLimit, offset, scan);
         
         this.scans = getParallelScans();
         List<KeyRange> splitRanges = Lists.newArrayListWithExpectedSize(scans.size() * ESTIMATED_GUIDEPOSTS_PER_REGION);
@@ -223,94 +363,20 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         this.allFutures = Lists.newArrayListWithExpectedSize(1);
     }
 
-    private static void doColumnProjectionOptimization(StatementContext context, Scan scan, PTable table, FilterableStatement statement) {
-        Map<byte[], NavigableSet<byte[]>> familyMap = scan.getFamilyMap();
-        if (familyMap != null && !familyMap.isEmpty()) {
-            // columnsTracker contain cf -> qualifiers which should get returned.
-            Map<ImmutableBytesPtr, NavigableSet<ImmutableBytesPtr>> columnsTracker = 
-                    new TreeMap<ImmutableBytesPtr, NavigableSet<ImmutableBytesPtr>>();
-            Set<byte[]> conditionOnlyCfs = new TreeSet<byte[]>(Bytes.BYTES_COMPARATOR);
-            int referencedCfCount = familyMap.size();
-            for (Pair<byte[], byte[]> whereCol : context.getWhereCoditionColumns()) {
-                if (!(familyMap.containsKey(whereCol.getFirst()))) {
-                    referencedCfCount++;
-                }
-            }
-            boolean useOptimization;
-            if (statement.getHint().hasHint(Hint.SEEK_TO_COLUMN)) {
-                // Do not use the optimization
-                useOptimization = false;
-            } else if (statement.getHint().hasHint(Hint.NO_SEEK_TO_COLUMN)) {
-                // Strictly use the optimization
-                useOptimization = true;
-            } else {
-                // when referencedCfCount is >1 and no Hints, we are not using the optimization
-                useOptimization = referencedCfCount == 1;
-            }
-            if (useOptimization) {
-                for (Entry<byte[], NavigableSet<byte[]>> entry : familyMap.entrySet()) {
-                    ImmutableBytesPtr cf = new ImmutableBytesPtr(entry.getKey());
-                    NavigableSet<byte[]> qs = entry.getValue();
-                    NavigableSet<ImmutableBytesPtr> cols = null;
-                    if (qs != null) {
-                        cols = new TreeSet<ImmutableBytesPtr>();
-                        for (byte[] q : qs) {
-                            cols.add(new ImmutableBytesPtr(q));
-                        }
-                    }
-                    columnsTracker.put(cf, cols);
-                }
-            }
-            // Making sure that where condition CFs are getting scanned at HRS.
-            for (Pair<byte[], byte[]> whereCol : context.getWhereCoditionColumns()) {
-                if (useOptimization) {
-                    if (!(familyMap.containsKey(whereCol.getFirst()))) {
-                        scan.addFamily(whereCol.getFirst());
-                        conditionOnlyCfs.add(whereCol.getFirst());
-                    }
-                } else {
-                    if (familyMap.containsKey(whereCol.getFirst())) {
-                        // where column's CF is present. If there are some specific columns added against this CF, we
-                        // need to ensure this where column also getting added in it.
-                        // If the select was like select cf1.*, then that itself will select the whole CF. So no need to
-                        // specifically add the where column. Adding that will remove the cf1.* stuff and only this
-                        // where condition column will get returned!
-                        NavigableSet<byte[]> cols = familyMap.get(whereCol.getFirst());
-                        // cols is null means the whole CF will get scanned.
-                        if (cols != null) {
-                            scan.addColumn(whereCol.getFirst(), whereCol.getSecond());
-                        }
-                    } else {
-                        // where column's CF itself is not present in family map. We need to add the column
-                        scan.addColumn(whereCol.getFirst(), whereCol.getSecond());
-                    }
-                }
-            }
-            if (useOptimization && !columnsTracker.isEmpty()) {
-                for (ImmutableBytesPtr f : columnsTracker.keySet()) {
-                    // This addFamily will remove explicit cols in scan familyMap and make it as entire row.
-                    // We don't want the ExplicitColumnTracker to be used. Instead we have the ColumnProjectionFilter
-                    scan.addFamily(f.get());
-                }
-                // We don't need this filter for aggregates, as we're not returning back what's
-                // in the scan in this case. We still want the other optimization that causes
-                // the ExplicitColumnTracker not to be used, though.
-                if (!(statement.isAggregate())) {
-                    ScanUtil.andFilterAtEnd(scan, new ColumnProjectionFilter(SchemaUtil.getEmptyColumnFamily(table),
-                            columnsTracker, conditionOnlyCfs));
-                }
-            }
-        }
-    }
-
     @Override
     public List<KeyRange> getSplits() {
-        return splits;
+        if (splits == null)
+            return Collections.emptyList();
+        else
+            return splits;
     }
 
     @Override
     public List<List<Scan>> getScans() {
-        return scans;
+        if (scans == null)
+            return Collections.emptyList();
+        else
+            return scans;
     }
 
     private static List<byte[]> toBoundaries(List<HRegionLocation> regionLocations) {
@@ -338,49 +404,47 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         guideIndex = (guideIndex < 0 ? -(guideIndex + 1) : guideIndex);
         return guideIndex;
     }
-    
-    private List<byte[]> getGuidePosts() {
+
+    private GuidePostsInfo getGuidePosts(Set<byte[]> whereConditions) {
         /*
-         *  Don't use guide posts if:
-         *  1) We're doing a point lookup, as HBase is fast enough at those
-         *     to not need them to be further parallelized. TODO: pref test to verify
-         *  2) We're collecting stats, as in this case we need to scan entire
-         *     regions worth of data to track where to put the guide posts.
+         * Don't use guide posts if: 1) We're doing a point lookup, as HBase is fast enough at those to not need them to
+         * be further parallelized. TODO: pref test to verify 2) We're collecting stats, as in this case we need to scan
+         * entire regions worth of data to track where to put the guide posts.
          */
-        if (!useStats()) {
-            return Collections.emptyList();
-        }
-        
-        List<byte[]> gps = null;
+        if (!useStats()) { return GuidePostsInfo.NO_GUIDEPOST; }
+
+        GuidePostsInfo gps = null;
         PTable table = getTable();
-        Map<byte[],GuidePostsInfo> guidePostMap = tableStats.getGuidePosts();
+        Map<byte[], GuidePostsInfo> guidePostMap = tableStats.getGuidePosts();
         byte[] defaultCF = SchemaUtil.getEmptyColumnFamily(getTable());
         if (table.getColumnFamilies().isEmpty()) {
             // For sure we can get the defaultCF from the table
-            if (guidePostMap.get(defaultCF) != null) {
-                gps = guidePostMap.get(defaultCF).getGuidePosts();
-            }
+            gps = getDefaultFamilyGuidePosts(guidePostMap, defaultCF);
         } else {
-            Scan scan = context.getScan();
-            if (scan.getFamilyMap().size() > 0 && !scan.getFamilyMap().containsKey(defaultCF)) {
-                // If default CF is not used in scan, use first CF referenced in scan
-                GuidePostsInfo guidePostsInfo = guidePostMap.get(scan.getFamilyMap().keySet().iterator().next());
-                if (guidePostsInfo != null) {
-                    gps = guidePostsInfo.getGuidePosts();
-                }
+            if (whereConditions.isEmpty() || whereConditions.contains(defaultCF)) {
+                gps = getDefaultFamilyGuidePosts(guidePostMap, defaultCF);
             } else {
-                // Otherwise, favor use of default CF.
-                if (guidePostMap.get(defaultCF) != null) {
-                    gps = guidePostMap.get(defaultCF).getGuidePosts();
+                byte[] familyInWhere = whereConditions.iterator().next();
+                GuidePostsInfo guidePostsInfo = guidePostMap.get(familyInWhere);
+                if (guidePostsInfo != null) {
+                    gps = guidePostsInfo;
+                } else {
+                    // As there are no guideposts collected for the where family we go with the default CF
+                    gps = getDefaultFamilyGuidePosts(guidePostMap, defaultCF);
                 }
             }
         }
-        if (gps == null) {
-            return Collections.emptyList();
-        }
+        if (gps == null) { return GuidePostsInfo.NO_GUIDEPOST; }
         return gps;
     }
-    
+
+    private GuidePostsInfo getDefaultFamilyGuidePosts(Map<byte[], GuidePostsInfo> guidePostMap, byte[] defaultCF) {
+        if (guidePostMap.get(defaultCF) != null) {
+                return guidePostMap.get(defaultCF);
+        }
+        return null;
+    }
+
     private static String toString(List<byte[]> gps) {
         StringBuilder buf = new StringBuilder(gps.size() * 100);
         buf.append("[");
@@ -395,9 +459,10 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         return buf.toString();
     }
     
-    private List<Scan> addNewScan(List<List<Scan>> parallelScans, List<Scan> scans, Scan scan, byte[] startKey, boolean crossedRegionBoundary) {
+    private List<Scan> addNewScan(List<List<Scan>> parallelScans, List<Scan> scans, Scan scan, byte[] startKey, boolean crossedRegionBoundary, HRegionLocation regionLocation) {
         boolean startNewScan = scanGrouper.shouldStartNewScan(plan, scans, startKey, crossedRegionBoundary);
         if (scan != null) {
+            scan.setAttribute(BaseScannerRegionObserver.SCAN_REGION_SERVER, regionLocation.getServerName().getVersionedBytes());
         	scans.add(scan);
         }
         if (startNewScan && !scans.isEmpty()) {
@@ -408,7 +473,66 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
     }
 
     private List<List<Scan>> getParallelScans() throws SQLException {
+        // If the scan boundaries are not matching with scan in context that means we need to get
+        // parallel scans for the chunk after split/merge.
+        if (!ScanUtil.isConextScan(scan, context)) {
+            return getParallelScans(scan);
+        }
         return getParallelScans(EMPTY_BYTE_ARRAY, EMPTY_BYTE_ARRAY);
+    }
+
+    /**
+     * Get parallel scans of the specified scan boundaries. This can be used for getting parallel
+     * scans when there is split/merges while scanning a chunk. In this case we need not go by all
+     * the regions or guideposts.
+     * @param scan
+     * @return
+     * @throws SQLException
+     */
+    private List<List<Scan>> getParallelScans(Scan scan) throws SQLException {
+        List<HRegionLocation> regionLocations = context.getConnection().getQueryServices()
+                .getAllTableRegions(physicalTableName);
+        List<byte[]> regionBoundaries = toBoundaries(regionLocations);
+        int regionIndex = 0;
+        int stopIndex = regionBoundaries.size();
+        if (scan.getStartRow().length > 0) {
+            regionIndex = getIndexContainingInclusive(regionBoundaries, scan.getStartRow());
+        }
+        if (scan.getStopRow().length > 0) {
+            stopIndex = Math.min(stopIndex, regionIndex + getIndexContainingExclusive(regionBoundaries.subList(regionIndex, stopIndex), scan.getStopRow()));
+        }
+        List<List<Scan>> parallelScans = Lists.newArrayListWithExpectedSize(stopIndex - regionIndex + 1);
+        List<Scan> scans = Lists.newArrayListWithExpectedSize(2);
+        while (regionIndex <= stopIndex) {
+            HRegionLocation regionLocation = regionLocations.get(regionIndex);
+            HRegionInfo regionInfo = regionLocation.getRegionInfo();
+            Scan newScan = ScanUtil.newScan(scan);
+            byte[] endKey;
+            if (regionIndex == stopIndex) {
+                endKey = scan.getStopRow();
+            } else {
+                endKey = regionBoundaries.get(regionIndex);
+            }
+            if(ScanUtil.isLocalIndex(scan)) {
+                ScanUtil.setLocalIndexAttributes(newScan, 0, regionInfo.getStartKey(),
+                    regionInfo.getEndKey(), newScan.getAttribute(SCAN_START_ROW_SUFFIX),
+                    newScan.getAttribute(SCAN_STOP_ROW_SUFFIX));
+            } else {
+                if(Bytes.compareTo(scan.getStartRow(), regionInfo.getStartKey())<=0) {
+                    newScan.setAttribute(SCAN_ACTUAL_START_ROW, regionInfo.getStartKey());
+                    newScan.setStartRow(regionInfo.getStartKey());
+                }
+                if(scan.getStopRow().length == 0 || (regionInfo.getEndKey().length != 0 && Bytes.compareTo(scan.getStopRow(), regionInfo.getEndKey())>0)) {
+                    newScan.setStopRow(regionInfo.getEndKey());
+                }
+            }
+            scans = addNewScan(parallelScans, scans, newScan, endKey, true, regionLocation);
+            regionIndex++;
+        }
+        if (!scans.isEmpty()) { // Add any remaining scans
+            parallelScans.add(scans);
+        }
+        return parallelScans;
     }
 
     /**
@@ -419,7 +543,6 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
      * @throws SQLException
      */
     private List<List<Scan>> getParallelScans(byte[] startKey, byte[] stopKey) throws SQLException {
-        Scan scan = context.getScan();
         List<HRegionLocation> regionLocations = context.getConnection().getQueryServices()
                 .getAllTableRegions(physicalTableName);
         List<byte[]> regionBoundaries = toBoundaries(regionLocations);
@@ -427,10 +550,15 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         PTable table = getTable();
         boolean isSalted = table.getBucketNum() != null;
         boolean isLocalIndex = table.getIndexType() == IndexType.LOCAL;
-        List<byte[]> gps = getGuidePosts();
-        if (logger.isDebugEnabled()) {
-            logger.debug("Guideposts: " + toString(gps));
+        TreeSet<byte[]> whereConditions = new TreeSet<byte[]>(Bytes.BYTES_COMPARATOR);
+        for(Pair<byte[], byte[]> where : context.getWhereConditionColumns()) {
+            byte[] cf = where.getFirst();
+            if (cf != null) {
+                whereConditions.add(cf);
+            }
         }
+        GuidePostsInfo gps = getGuidePosts(whereConditions);
+        hasGuidePosts = gps != GuidePostsInfo.NO_GUIDEPOST;
         boolean traverseAllRegions = isSalted || isLocalIndex;
         if (!traverseAllRegions) {
             byte[] scanStartRow = scan.getStartRow();
@@ -438,7 +566,8 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
                 startKey = scanStartRow;
             }
             byte[] scanStopRow = scan.getStopRow();
-            if (stopKey.length == 0 || Bytes.compareTo(scanStopRow, stopKey) < 0) {
+            if (stopKey.length == 0
+                    || (scanStopRow.length != 0 && Bytes.compareTo(scanStopRow, stopKey) < 0)) {
                 stopKey = scanStopRow;
             }
         }
@@ -456,50 +585,97 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
         }
         List<List<Scan>> parallelScans = Lists.newArrayListWithExpectedSize(stopIndex - regionIndex + 1);
         
-        byte[] currentKey = startKey;
-        int guideIndex = currentKey.length == 0 ? 0 : getIndexContainingInclusive(gps, currentKey);
-        int gpsSize = gps.size();
+        ImmutableBytesWritable currentKey = new ImmutableBytesWritable(startKey);
+        
+        int gpsSize = gps.getGuidePostsCount();
         int estGuidepostsPerRegion = gpsSize == 0 ? 1 : gpsSize / regionLocations.size() + 1;
         int keyOffset = 0;
+        ImmutableBytesWritable currentGuidePost = ByteUtil.EMPTY_IMMUTABLE_BYTE_ARRAY;
         List<Scan> scans = Lists.newArrayListWithExpectedSize(estGuidepostsPerRegion);
-        // Merge bisect with guideposts for all but the last region
-        while (regionIndex <= stopIndex) {
-            byte[] currentGuidePost, endKey, endRegionKey = EMPTY_BYTE_ARRAY;
-            if (regionIndex == stopIndex) {
-                endKey = stopKey;
-            } else {
-                endKey = regionBoundaries.get(regionIndex);
+        ImmutableBytesWritable guidePosts = gps.getGuidePosts();
+        ByteArrayInputStream stream = null;
+        DataInput input = null;
+        PrefixByteDecoder decoder = null;
+        int guideIndex = 0;
+        long estimatedRows = 0;
+        long estimatedSize = 0;
+        try {
+            if (gpsSize > 0) {
+                stream = new ByteArrayInputStream(guidePosts.get(), guidePosts.getOffset(), guidePosts.getLength());
+                input = new DataInputStream(stream);
+                decoder = new PrefixByteDecoder(gps.getMaxLength());
+                try {
+                    while (currentKey.compareTo(currentGuidePost = PrefixByteCodec.decode(decoder, input)) >= 0
+                            && currentKey.getLength() != 0) {
+                        guideIndex++;
+                    }
+                } catch (EOFException e) {}
             }
-            if (isLocalIndex) {
-                HRegionInfo regionInfo = regionLocations.get(regionIndex).getRegionInfo();
-                endRegionKey = regionInfo.getEndKey();
-                keyOffset = ScanUtil.getRowKeyOffset(regionInfo.getStartKey(), endRegionKey);
-            }
-            while (guideIndex < gpsSize
-                    && (Bytes.compareTo(currentGuidePost = gps.get(guideIndex), endKey) <= 0 || endKey.length == 0)) {
-                Scan newScan = scanRanges.intersectScan(scan, currentKey, currentGuidePost, keyOffset, false);
-                scans = addNewScan(parallelScans, scans, newScan, currentGuidePost, false);
-                currentKey = currentGuidePost;
-                guideIndex++;
-            }
-            Scan newScan = scanRanges.intersectScan(scan, currentKey, endKey, keyOffset, true);
-            if (isLocalIndex) {
-                if (newScan != null) {
-                    newScan.setAttribute(EXPECTED_UPPER_REGION_KEY, endRegionKey);
-                } else if (!scans.isEmpty()) {
-                    scans.get(scans.size()-1).setAttribute(EXPECTED_UPPER_REGION_KEY, endRegionKey);
+            byte[] currentKeyBytes = currentKey.copyBytes();
+    
+            // Merge bisect with guideposts for all but the last region
+            while (regionIndex <= stopIndex) {
+                HRegionLocation regionLocation = regionLocations.get(regionIndex);
+                HRegionInfo regionInfo = regionLocation.getRegionInfo();
+                byte[] currentGuidePostBytes = currentGuidePost.copyBytes();
+                byte[] endKey, endRegionKey = EMPTY_BYTE_ARRAY;
+                if (regionIndex == stopIndex) {
+                    endKey = stopKey;
+                } else {
+                    endKey = regionBoundaries.get(regionIndex);
                 }
+                if (isLocalIndex) {
+                    endRegionKey = regionInfo.getEndKey();
+                    keyOffset = ScanUtil.getRowKeyOffset(regionInfo.getStartKey(), endRegionKey);
+                }
+                try {
+                    while (guideIndex < gpsSize && (currentGuidePost.compareTo(endKey) <= 0 || endKey.length == 0)) {
+                        Scan newScan = scanRanges.intersectScan(scan, currentKeyBytes, currentGuidePostBytes, keyOffset,
+                                false);
+                        if(newScan != null) {
+                            ScanUtil.setLocalIndexAttributes(newScan, keyOffset, regionInfo.getStartKey(),
+                                regionInfo.getEndKey(), newScan.getStartRow(), newScan.getStopRow());
+                        }
+                        if (newScan != null) {
+                            estimatedRows += gps.getRowCounts().get(guideIndex);
+                            estimatedSize += gps.getByteCounts().get(guideIndex);
+                        }
+                        scans = addNewScan(parallelScans, scans, newScan, currentGuidePostBytes, false, regionLocation);
+                        currentKeyBytes = currentGuidePost.copyBytes();
+                        currentGuidePost = PrefixByteCodec.decode(decoder, input);
+                        currentGuidePostBytes = currentGuidePost.copyBytes();
+                        guideIndex++;
+                    }
+                } catch (EOFException e) {}
+                Scan newScan = scanRanges.intersectScan(scan, currentKeyBytes, endKey, keyOffset, true);
+                if(newScan != null) {
+                    ScanUtil.setLocalIndexAttributes(newScan, keyOffset, regionInfo.getStartKey(),
+                        regionInfo.getEndKey(), newScan.getStartRow(), newScan.getStopRow());
+                }
+                scans = addNewScan(parallelScans, scans, newScan, endKey, true, regionLocation);
+                currentKeyBytes = endKey;
+                regionIndex++;
             }
-            scans = addNewScan(parallelScans, scans, newScan, endKey, true);
-            currentKey = endKey;
-            regionIndex++;
-        }
-        if (!scans.isEmpty()) { // Add any remaining scans
-            parallelScans.add(scans);
+            if (hasGuidePosts) {
+                this.estimatedRows = estimatedRows;
+                this.estimatedSize = estimatedSize;
+            } else if (scanRanges.isPointLookup()) {
+                this.estimatedRows = 1L;
+                this.estimatedSize = SchemaUtil.estimateRowSize(table);
+            } else {
+                this.estimatedRows = null;
+                this.estimatedSize = null;
+            }
+            if (!scans.isEmpty()) { // Add any remaining scans
+                parallelScans.add(scans);
+            }
+        } finally {
+            if (stream != null) Closeables.closeQuietly(stream);
         }
         return parallelScans;
     }
 
+   
     public static <T> List<T> reverseIfNecessary(List<T> list, boolean reverse) {
         if (!reverse) {
             return list;
@@ -513,30 +689,54 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
      */
     @Override
     public List<PeekingResultIterator> getIterators() throws SQLException {
-        Scan scan = context.getScan();
         if (logger.isDebugEnabled()) {
             logger.debug(LogUtil.addCustomAnnotations("Getting iterators for " + this,
                     ScanUtil.getCustomAnnotations(scan)));
         }
-        boolean success = false;
         boolean isReverse = ScanUtil.isReversed(scan);
         boolean isLocalIndex = getTable().getIndexType() == IndexType.LOCAL;
         final ConnectionQueryServices services = context.getConnection().getQueryServices();
+        // Get query time out from Statement
+        final long startTime = System.currentTimeMillis();
+        final long maxQueryEndTime = startTime + context.getStatement().getQueryTimeoutInMillis();
         int numScans = size();
         // Capture all iterators so that if something goes wrong, we close them all
         // The iterators list is based on the submission of work, so it may not
         // contain them all (for example if work was rejected from the queue)
         Queue<PeekingResultIterator> allIterators = new ConcurrentLinkedQueue<>();
         List<PeekingResultIterator> iterators = new ArrayList<PeekingResultIterator>(numScans);
-        final List<List<Pair<Scan,Future<PeekingResultIterator>>>> futures = Lists.newArrayListWithExpectedSize(numScans);
+        ScanWrapper previousScan = new ScanWrapper(null);
+        return getIterators(scans, services, isLocalIndex, allIterators, iterators, isReverse, maxQueryEndTime,
+                splits.size(), previousScan);
+    }
+
+    class ScanWrapper {
+        Scan scan;
+
+        public Scan getScan() {
+            return scan;
+        }
+
+        public void setScan(Scan scan) {
+            this.scan = scan;
+        }
+
+        public ScanWrapper(Scan scan) {
+            this.scan = scan;
+        }
+
+    }
+
+    private List<PeekingResultIterator> getIterators(List<List<Scan>> scan, ConnectionQueryServices services,
+            boolean isLocalIndex, Queue<PeekingResultIterator> allIterators, List<PeekingResultIterator> iterators,
+            boolean isReverse, long maxQueryEndTime, int splitSize, ScanWrapper previousScan) throws SQLException {
+        boolean success = false;
+        final List<List<Pair<Scan,Future<PeekingResultIterator>>>> futures = Lists.newArrayListWithExpectedSize(splitSize);
         allFutures.add(futures);
         SQLException toThrow = null;
-        // Get query time out from Statement and convert from seconds back to milliseconds
-        int queryTimeOut = context.getStatement().getQueryTimeout() * 1000;
-        final long startTime = System.currentTimeMillis();
-        final long maxQueryEndTime = startTime + queryTimeOut;
+        int queryTimeOut = context.getStatement().getQueryTimeoutInMillis();
         try {
-            submitWork(scans, futures, allIterators, splits.size());
+            submitWork(scan, futures, allIterators, splitSize, isReverse, scanGrouper);
             boolean clearedCache = false;
             for (List<Pair<Scan,Future<PeekingResultIterator>>> future : reverseIfNecessary(futures,isReverse)) {
                 List<PeekingResultIterator> concatIterators = Lists.newArrayListWithExpectedSize(future.size());
@@ -546,46 +746,39 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
                         if (timeOutForScan < 0) {
                             throw new SQLExceptionInfo.Builder(SQLExceptionCode.OPERATION_TIMED_OUT).setMessage(". Query couldn't be completed in the alloted time: " + queryTimeOut + " ms").build().buildException(); 
                         }
+                        if (isLocalIndex && previousScan != null && previousScan.getScan() != null
+                                && (((!isReverse && Bytes.compareTo(scanPair.getFirst().getAttribute(SCAN_ACTUAL_START_ROW),
+                                        previousScan.getScan().getStopRow()) < 0)
+                                || (isReverse && Bytes.compareTo(scanPair.getFirst().getAttribute(SCAN_ACTUAL_START_ROW),
+                                        previousScan.getScan().getStopRow()) > 0)
+                                || (Bytes.compareTo(scanPair.getFirst().getStopRow(), previousScan.getScan().getStopRow()) == 0)) 
+                                    && Bytes.compareTo(scanPair.getFirst().getAttribute(SCAN_START_ROW_SUFFIX), previousScan.getScan().getAttribute(SCAN_START_ROW_SUFFIX))==0)) {
+                            continue;
+                        }
                         PeekingResultIterator iterator = scanPair.getSecond().get(timeOutForScan, TimeUnit.MILLISECONDS);
                         concatIterators.add(iterator);
+                        previousScan.setScan(scanPair.getFirst());
                     } catch (ExecutionException e) {
                         try { // Rethrow as SQLException
                             throw ServerUtil.parseServerException(e);
                         } catch (StaleRegionBoundaryCacheException e2) {
                             // Catch only to try to recover from region boundary cache being out of date
-                            List<List<Pair<Scan,Future<PeekingResultIterator>>>> newFutures = Lists.newArrayListWithExpectedSize(2);
                             if (!clearedCache) { // Clear cache once so that we rejigger job based on new boundaries
                                 services.clearTableRegionCache(physicalTableName);
-                                clearedCache = true;
                                 context.getOverallQueryMetrics().cacheRefreshedDueToSplits();
                             }
                             // Resubmit just this portion of work again
                             Scan oldScan = scanPair.getFirst();
-                            byte[] startKey = oldScan.getStartRow();
+                            byte[] startKey = oldScan.getAttribute(SCAN_ACTUAL_START_ROW);
                             byte[] endKey = oldScan.getStopRow();
-                            if (isLocalIndex) {
-                                endKey = oldScan.getAttribute(EXPECTED_UPPER_REGION_KEY);
-                            }
+                            
                             List<List<Scan>> newNestedScans = this.getParallelScans(startKey, endKey);
                             // Add any concatIterators that were successful so far
                             // as we need these to be in order
                             addIterator(iterators, concatIterators);
                             concatIterators = Lists.newArrayList();
-                            submitWork(newNestedScans, newFutures, allIterators, newNestedScans.size());
-                            allFutures.add(newFutures);
-                            for (List<Pair<Scan,Future<PeekingResultIterator>>> newFuture : reverseIfNecessary(newFutures, isReverse)) {
-                                for (Pair<Scan,Future<PeekingResultIterator>> newScanPair : reverseIfNecessary(newFuture, isReverse)) {
-                                    // Immediate do a get (not catching exception again) and then add the iterators we
-                                    // get back immediately. They'll be sorted as expected, since they're replacing the
-                                    // original one.
-                                    long timeOutForScan = maxQueryEndTime - System.currentTimeMillis();
-                                    if (timeOutForScan < 0) {
-                                        throw new SQLExceptionInfo.Builder(SQLExceptionCode.OPERATION_TIMED_OUT).setMessage(". Query couldn't be completed in the alloted time: " + queryTimeOut + " ms").build().buildException(); 
-                                    }
-                                    PeekingResultIterator iterator = newScanPair.getSecond().get(timeOutForScan, TimeUnit.MILLISECONDS);
-                                    iterators.add(iterator);
-                                }
-                            }
+                            getIterators(newNestedScans, services, isLocalIndex, allIterators, iterators, isReverse,
+                                    maxQueryEndTime, newNestedScans.size(), previousScan);
                         }
                     }
                 }
@@ -641,10 +834,14 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
 
     @Override
     public void close() throws SQLException {
+        if (allFutures.isEmpty()) {
+            return;
+        }
         // Don't call cancel on already started work, as it causes the HConnection
         // to get into a funk. Instead, just cancel queued work.
         boolean cancelledWork = false;
         try {
+            List<Future<PeekingResultIterator>> futuresToClose = Lists.newArrayListWithExpectedSize(getSplits().size());
             for (List<List<Pair<Scan,Future<PeekingResultIterator>>>> futures : allFutures) {
                 for (List<Pair<Scan,Future<PeekingResultIterator>>> futureScans : futures) {
                     for (Pair<Scan,Future<PeekingResultIterator>> futurePair : futureScans) {
@@ -653,16 +850,35 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
                         if (futurePair != null) {
                             Future<PeekingResultIterator> future = futurePair.getSecond();
                             if (future != null) {
-                                future.cancel(false);
+                                if (future.cancel(false)) {
+                                    cancelledWork = true;
+                                } else {
+                                    futuresToClose.add(future);
+                                }
                             }
                         }
                     }
+                }
+            }
+            // Wait for already started tasks to complete as we can't interrupt them without
+            // leaving our HConnection in a funky state.
+            for (Future<PeekingResultIterator> future : futuresToClose) {
+                try {
+                    PeekingResultIterator iterator = future.get();
+                    iterator.close();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                } catch (ExecutionException e) {
+                    logger.info("Failed to execute task during cancel", e);
+                    continue;
                 }
             }
         } finally {
             if (cancelledWork) {
                 context.getConnection().getQueryServices().getExecutor().purge();
             }
+            allFutures.clear();
         }
     }
 
@@ -706,7 +922,7 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
 
     abstract protected String getName();    
     abstract protected void submitWork(List<List<Scan>> nestedScans, List<List<Pair<Scan,Future<PeekingResultIterator>>>> nestedFutures,
-            Queue<PeekingResultIterator> allIterators, int estFlattenedSize);
+            Queue<PeekingResultIterator> allIterators, int estFlattenedSize, boolean isReverse, ParallelScanGrouper scanGrouper) throws SQLException;
     
     @Override
     public int size() {
@@ -719,12 +935,39 @@ public abstract class BaseResultIterators extends ExplainTable implements Result
                 QueryServices.EXPLAIN_CHUNK_COUNT_ATTRIB,
                 QueryServicesOptions.DEFAULT_EXPLAIN_CHUNK_COUNT);
         StringBuilder buf = new StringBuilder();
-        buf.append("CLIENT " + (displayChunkCount ? (this.splits.size() + "-CHUNK ") : "") + getName() + " " + size() + "-WAY ");
+        buf.append("CLIENT ");
+        if (displayChunkCount) {
+            boolean displayRowCount = context.getConnection().getQueryServices().getProps().getBoolean(
+                    QueryServices.EXPLAIN_ROW_COUNT_ATTRIB,
+                    QueryServicesOptions.DEFAULT_EXPLAIN_ROW_COUNT);
+            buf.append(this.splits.size()).append("-CHUNK ");
+            if (displayRowCount && estimatedRows != null) {
+                buf.append(estimatedRows).append(" ROWS ");
+                buf.append(estimatedSize).append(" BYTES ");
+            }
+        }
+        buf.append(getName()).append(" ").append(size()).append("-WAY ");
+        try {
+            if (plan.useRoundRobinIterator()) {
+                buf.append("ROUND ROBIN ");
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
         explain(buf.toString(),planSteps);
     }
 
-	@Override
-	public String toString() {
-		return "ResultIterators [name=" + getName() + ",id=" + scanId + ",scans=" + scans + "]";
-	}
+    public Long getEstimatedRowCount() {
+        return this.estimatedRows;
+    }
+    
+    public Long getEstimatedByteCount() {
+        return this.estimatedSize;
+    }
+    
+    @Override
+    public String toString() {
+        return "ResultIterators [name=" + getName() + ",id=" + scanId + ",scans=" + scans + "]";
+    }
+
 }

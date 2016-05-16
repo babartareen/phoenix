@@ -170,6 +170,7 @@ public abstract class PDataType<T> implements DataType<T>, Comparable<PDataType<
                 }
                 if (lhsSortOrder == SortOrder.DESC) {
                     lhs = SortOrder.invert(lhs, lhsOffset, new byte[lhsLength], 0, lhsLength);
+                    lhsOffset = 0;
                 }
             }
             return Bytes.compareTo(lhs, lhsOffset, lhsLength, rhsConverted, 0, rhsConverted.length);
@@ -1115,6 +1116,9 @@ public abstract class PDataType<T> implements DataType<T>, Comparable<PDataType<
          */
         if (lowerRange != KeyRange.UNBOUND && !lowerInclusive && isFixedWidth()) {
             lowerRange = ByteUtil.nextKey(lowerRange);
+            if (lowerRange == null) { // overflow
+                lowerRange = KeyRange.UNBOUND;
+            }
             lowerInclusive = true;
         }
         return KeyRange.getKeyRange(lowerRange, lowerInclusive, upperRange, upperInclusive);

@@ -9,6 +9,7 @@
  */
 package org.apache.phoenix.end2end.index;
 
+import static org.apache.phoenix.query.QueryConstants.MILLIS_IN_DAY;
 import static org.apache.phoenix.util.TestUtil.INDEX_DATA_SCHEMA;
 import static org.apache.phoenix.util.TestUtil.INDEX_DATA_TABLE;
 import static org.apache.phoenix.util.TestUtil.MUTABLE_INDEX_DATA_TABLE;
@@ -40,8 +41,6 @@ import org.apache.phoenix.util.QueryUtil;
 import org.junit.Test;
 
 public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
-
-    private static final int NUM_MILLIS_IN_DAY = 86400000;
 
     @Test
     public void testImmutableIndexCreateAndUpdate() throws Exception {
@@ -76,7 +75,7 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
         stmt.setInt(3, i);
         stmt.setLong(4, i);
         stmt.setBigDecimal(5, new BigDecimal(i*0.5d));
-        Date date = new Date(DateUtil.parseDate("2015-01-01 00:00:00").getTime() + (i - 1) * NUM_MILLIS_IN_DAY);
+        Date date = new Date(DateUtil.parseDate("2015-01-01 00:00:00").getTime() + (i - 1) * MILLIS_IN_DAY);
         stmt.setDate(6, date);
         stmt.setString(7, "a.varchar" + String.valueOf(i));
         stmt.setString(8, "a.char" + String.valueOf(i));
@@ -95,11 +94,11 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
 
     private void verifyResult(ResultSet rs, int i) throws SQLException {
         assertTrue(rs.next());
-        assertEquals("VARCHAR" + String.valueOf(i) + "_" + StringUtils.rightPad("CHAR" + String.valueOf(i), 6, ' ')
+        assertEquals("VARCHAR" + String.valueOf(i) + "_" + StringUtils.rightPad("CHAR" + String.valueOf(i), 10, ' ')
                 + "_A.VARCHAR" + String.valueOf(i) + "_" + StringUtils.rightPad("B.CHAR" + String.valueOf(i), 10, ' '),
                 rs.getString(1));
         assertEquals(i * 3, rs.getInt(2));
-        Date date = new Date(DateUtil.parseDate("2015-01-01 00:00:00").getTime() + (i) * NUM_MILLIS_IN_DAY);
+        Date date = new Date(DateUtil.parseDate("2015-01-01 00:00:00").getTime() + (i) * MILLIS_IN_DAY);
         assertEquals(date, rs.getDate(3));
         assertEquals(date, rs.getDate(4));
         assertEquals(date, rs.getDate(5));
@@ -141,7 +140,7 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
                     // DECIMAL in the index (which is not fixed width)
                     + " AND date_pk+1=? AND date1+1=? AND date2+1=?";
             stmt = conn.prepareStatement(whereSql);
-            stmt.setString(1, "VARCHAR1_CHAR1 _A.VARCHAR1_B.CHAR1   ");
+            stmt.setString(1, "VARCHAR1_CHAR1     _A.VARCHAR1_B.CHAR1   ");
             stmt.setInt(2, 3);
             Date date = DateUtil.parseDate("2015-01-02 00:00:00");
             stmt.setDate(3, date);
@@ -153,8 +152,8 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
             assertEquals(
                     localIndex ? "CLIENT PARALLEL 1-WAY RANGE SCAN OVER _LOCAL_IDX_INDEX_TEST."
                             + dataTableName
-                            + " [-32768,'VARCHAR1_CHAR1 _A.VARCHAR1_B.CHAR1   ',3,'2015-01-02 00:00:00.000',1,420,156,800,000,1,420,156,800,000]\nCLIENT MERGE SORT"
-                            : "CLIENT PARALLEL 1-WAY RANGE SCAN OVER INDEX_TEST.IDX ['VARCHAR1_CHAR1 _A.VARCHAR1_B.CHAR1   ',3,'2015-01-02 00:00:00.000',1,420,156,800,000,1,420,156,800,000]",
+                            + " [-32768,'VARCHAR1_CHAR1     _A.VARCHAR1_B.CHAR1   ',3,'2015-01-02 00:00:00.000',1,420,156,800,000,1,420,156,800,000]\nCLIENT MERGE SORT"
+                            : "CLIENT PARALLEL 1-WAY RANGE SCAN OVER INDEX_TEST.IDX ['VARCHAR1_CHAR1     _A.VARCHAR1_B.CHAR1   ',3,'2015-01-02 00:00:00.000',1,420,156,800,000,1,420,156,800,000]",
                     QueryUtil.getExplainPlan(rs));
 
             // verify that the correct results are returned
@@ -254,20 +253,20 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
                     + fullDataTableName;
             ResultSet rs = conn.createStatement().executeQuery("SELECT /*+ NO_INDEX */ " + selectSql);
             assertTrue(rs.next());
-            assertEquals("VARCHAR1_CHAR1 _A.VARCHAR_UPDATED_B.CHAR1   ", rs.getString(1));
+            assertEquals("VARCHAR1_CHAR1     _A.VARCHAR_UPDATED_B.CHAR1   ", rs.getString(1));
             assertEquals(101, rs.getLong(2));
             assertTrue(rs.next());
-            assertEquals("VARCHAR2_CHAR2 _A.VARCHAR2_B.CHAR2   ", rs.getString(1));
+            assertEquals("VARCHAR2_CHAR2     _A.VARCHAR2_B.CHAR2   ", rs.getString(1));
             assertEquals(2, rs.getLong(2));
             assertFalse(rs.next());
 
             // verify that the rows in the index table are also updated
             rs = conn.createStatement().executeQuery("SELECT " + selectSql);
             assertTrue(rs.next());
-            assertEquals("VARCHAR1_CHAR1 _A.VARCHAR_UPDATED_B.CHAR1   ", rs.getString(1));
+            assertEquals("VARCHAR1_CHAR1     _A.VARCHAR_UPDATED_B.CHAR1   ", rs.getString(1));
             assertEquals(101, rs.getLong(2));
             assertTrue(rs.next());
-            assertEquals("VARCHAR2_CHAR2 _A.VARCHAR2_B.CHAR2   ", rs.getString(1));
+            assertEquals("VARCHAR2_CHAR2     _A.VARCHAR2_B.CHAR2   ", rs.getString(1));
             assertEquals(2, rs.getLong(2));
             assertFalse(rs.next());
             conn.createStatement().execute("DROP INDEX IDX ON " + fullDataTableName);
@@ -480,7 +479,8 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
             String expectedPlan = "CLIENT PARALLEL 1-WAY "
                     + (localIndex ? "RANGE SCAN OVER _LOCAL_IDX_" + fullDataTableName + " [-32768]"
                             : "FULL SCAN OVER INDEX_TEST.IDX")
-                    + "\n    SERVER FILTER BY FIRST KEY ONLY\n    SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY [TO_BIGINT(\"(A.INT_COL1 + B.INT_COL2)\")]\nCLIENT MERGE SORT";
+                    + "\n    SERVER FILTER BY FIRST KEY ONLY\n    SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY [TO_BIGINT(\"(A.INT_COL1 + B.INT_COL2)\")]" 
+                    + (localIndex ? "\nCLIENT MERGE SORT" : "");
             assertEquals(expectedPlan, QueryUtil.getExplainPlan(rs));
             rs = conn.createStatement().executeQuery(groupBySql);
             assertTrue(rs.next());
@@ -531,7 +531,8 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
             String expectedPlan = "CLIENT PARALLEL 1-WAY RANGE SCAN OVER "
                     + (localIndex ? "_LOCAL_IDX_" + fullDataTableName + " [-32768,0] - [-32768,*]"
                             : "INDEX_TEST.IDX [0] - [*]")
-                    + "\n    SERVER FILTER BY FIRST KEY ONLY\n    SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY [TO_BIGINT(\"(A.INT_COL1 + 1)\")]\nCLIENT MERGE SORT";
+                    + "\n    SERVER FILTER BY FIRST KEY ONLY\n    SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY [TO_BIGINT(\"(A.INT_COL1 + 1)\")]"
+                    + (localIndex ? "\nCLIENT MERGE SORT" : "");
             assertEquals(expectedPlan, QueryUtil.getExplainPlan(rs));
             rs = conn.createStatement().executeQuery(sql);
             assertTrue(rs.next());
@@ -1337,6 +1338,74 @@ public class IndexExpressionIT extends BaseHBaseManagedTimeIT {
 			rs = conn.createStatement().executeQuery(query);
 			assertTrue(rs.next());
 			assertEquals("k1", rs.getString(1));
+			assertFalse(rs.next());
+		} finally {
+			conn.close();
+		}
+	}
+
+	@Test
+	public void testImmutableTableOnlyHasPrimaryKeyIndex() throws Exception {
+		helpTestTableOnlyHasPrimaryKeyIndex(false, false);
+	}
+
+	@Test
+	public void testImmutableLocalTableOnlyHasPrimaryKeyIndex() throws Exception {
+		helpTestTableOnlyHasPrimaryKeyIndex(false, true);
+	}
+
+	@Test
+	public void testMutableTableOnlyHasPrimaryKeyIndex() throws Exception {
+		helpTestTableOnlyHasPrimaryKeyIndex(true, false);
+	}
+
+	@Test
+	public void testMutableLocalTableOnlyHasPrimaryKeyIndex() throws Exception {
+		helpTestTableOnlyHasPrimaryKeyIndex(true, true);
+	}
+
+	private void helpTestTableOnlyHasPrimaryKeyIndex(boolean mutable,
+			boolean localIndex) throws Exception {
+		Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+		Connection conn = DriverManager.getConnection(getUrl(), props);
+		String nameSuffix = "t" + (mutable ? "_mutable" : "_immutable") + (localIndex ? "_local" : "_global");
+		String tableName = "t" + nameSuffix;
+		String indexName = "idx" + nameSuffix;
+		try {
+			conn.createStatement().execute(
+				"CREATE TABLE " + tableName + " ("
+							+ "pk1 VARCHAR not null, "
+							+ "pk2 VARCHAR not null, "
+							+ "CONSTRAINT PK PRIMARY KEY (pk1, pk2))"
+							+ (!mutable ? "IMMUTABLE_ROWS=true" : ""));
+			String query = "SELECT * FROM " + tableName;
+			ResultSet rs = conn.createStatement().executeQuery(query);
+			assertFalse(rs.next());
+			conn.createStatement().execute(
+				"CREATE " + (localIndex ? "LOCAL" : "")
+					+ " INDEX " + indexName + " ON " + tableName + " (pk2, pk1)");
+			query = "SELECT * FROM " + indexName;
+			rs = conn.createStatement().executeQuery(query);
+			assertFalse(rs.next());
+
+			PreparedStatement stmt = conn.prepareStatement("UPSERT INTO " + tableName + " VALUES(?,?)");
+			stmt.setString(1, "k11");
+			stmt.setString(2, "k21");
+			stmt.execute();
+			conn.commit();
+
+            query = "SELECT * FROM " + indexName;
+            rs = conn.createStatement().executeQuery(query);
+            assertTrue(rs.next());
+            assertEquals("k21", rs.getString(1));
+            assertEquals("k11", rs.getString(2));
+            assertFalse(rs.next());
+            
+			query = "SELECT * FROM " + tableName + " WHERE pk2='k21'";
+			rs = conn.createStatement().executeQuery(query);
+			assertTrue(rs.next());
+			assertEquals("k11", rs.getString(1));
+			assertEquals("k21", rs.getString(2));
 			assertFalse(rs.next());
 		} finally {
 			conn.close();

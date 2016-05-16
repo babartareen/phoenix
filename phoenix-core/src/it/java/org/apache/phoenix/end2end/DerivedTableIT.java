@@ -102,8 +102,10 @@ public class DerivedTableIT extends BaseClientManagedTimeIT {
                 "CLIENT PARALLEL 1-WAY FULL SCAN OVER ATABLE_DERIVED_IDX\n" +
                 "    SERVER AGGREGATE INTO DISTINCT ROWS BY [\"A_STRING\", \"B_STRING\"]\n" +
                 "CLIENT MERGE SORT\n" +
+                "CLIENT SORTED BY [A]\n" +
                 "CLIENT AGGREGATE INTO DISTINCT ROWS BY [A]\n" +
-                "CLIENT DISTINCT ON [COLLECTDISTINCT(B)]"}});
+                "CLIENT DISTINCT ON [COLLECTDISTINCT(B)]\n" + 
+                "CLIENT SORTED BY [A DESC]"}});
         testCases.add(new String[][] {
                 {}, {
                 "CLIENT PARALLEL 4-WAY FULL SCAN OVER ATABLE\n" +
@@ -117,8 +119,10 @@ public class DerivedTableIT extends BaseClientManagedTimeIT {
                 "CLIENT PARALLEL 4-WAY FULL SCAN OVER ATABLE\n" +
                 "    SERVER AGGREGATE INTO DISTINCT ROWS BY [A_STRING, B_STRING]\n" +
                 "CLIENT MERGE SORT\n" +
+                "CLIENT SORTED BY [A]\n" +
                 "CLIENT AGGREGATE INTO DISTINCT ROWS BY [A]\n" +
-                "CLIENT DISTINCT ON [COLLECTDISTINCT(B)]"}});
+                "CLIENT DISTINCT ON [COLLECTDISTINCT(B)]\n" + 
+                "CLIENT SORTED BY [A DESC]"}});
         return testCases;
     }
 
@@ -229,6 +233,46 @@ public class DerivedTableIT extends BaseClientManagedTimeIT {
             assertEquals(9,rs.getInt(1));
 
             assertFalse(rs.next());
+
+            // Inner limit < outer query offset
+            query = "SELECT t.eid, t.x + 9 FROM (SELECT entity_id eid, b_string b, a_byte + 1 x FROM aTable LIMIT 1 OFFSET 1 ) AS t WHERE t.b = '"
+                    + C_VALUE + "' OFFSET 2";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertFalse(rs.next());
+
+            // (where) offset
+            query = "SELECT t.eid, t.x + 9 FROM (SELECT entity_id eid, b_string b, a_byte + 1 x FROM aTable WHERE a_byte + 1 < 9 ) AS t OFFSET 2";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(ROW3, rs.getString(1));
+            assertEquals(13, rs.getInt(2));
+            assertTrue(rs.next());
+            assertEquals(ROW4, rs.getString(1));
+            assertEquals(14, rs.getInt(2));
+            assertTrue(rs.next());
+            assertEquals(ROW5, rs.getString(1));
+            assertEquals(15, rs.getInt(2));
+            assertTrue(rs.next());
+            assertEquals(ROW6, rs.getString(1));
+            assertEquals(16, rs.getInt(2));
+            assertTrue(rs.next());
+            assertEquals(ROW7, rs.getString(1));
+            assertEquals(17, rs.getInt(2));
+
+            // (offset) where
+            query = "SELECT t.eid, t.x + 9 FROM (SELECT entity_id eid, b_string b, a_byte + 1 x FROM aTable OFFSET 4) AS t WHERE t.b = '"
+                    + C_VALUE + "'";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(ROW5, rs.getString(1));
+            assertEquals(15, rs.getInt(2));
+            assertTrue(rs.next());
+            assertEquals(ROW8, rs.getString(1));
+            assertEquals(18, rs.getInt(2));
+
         } finally {
             conn.close();
         }
@@ -309,8 +353,8 @@ public class DerivedTableIT extends BaseClientManagedTimeIT {
             rs = conn.createStatement().executeQuery("EXPLAIN " + query);
             assertEquals(plans[0], QueryUtil.getExplainPlan(rs));
             
-            // distinct b (groupby a, b) groupby a
-            query = "SELECT DISTINCT COLLECTDISTINCT(t.b) FROM (SELECT b_string b, a_string a FROM aTable GROUP BY a_string, b_string) AS t GROUP BY t.a";
+            // distinct b (groupby a, b) groupby a orderby a
+            query = "SELECT DISTINCT COLLECTDISTINCT(t.b) FROM (SELECT b_string b, a_string a FROM aTable GROUP BY a_string, b_string) AS t GROUP BY t.a ORDER BY t.a DESC";
             statement = conn.prepareStatement(query);
             rs = statement.executeQuery();
             assertTrue (rs.next());
@@ -330,6 +374,33 @@ public class DerivedTableIT extends BaseClientManagedTimeIT {
             
             rs = conn.createStatement().executeQuery("EXPLAIN " + query);
             assertEquals(plans[1], QueryUtil.getExplainPlan(rs));
+            
+            // (orderby) groupby
+            query = "SELECT t.a_string, count(*) FROM (SELECT * FROM aTable order by a_integer) AS t where a_byte != 8 group by t.a_string";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue (rs.next());
+            assertEquals(A_VALUE,rs.getString(1));
+            assertEquals(4,rs.getInt(2));
+            assertTrue (rs.next());
+            assertEquals(B_VALUE,rs.getString(1));
+            assertEquals(3,rs.getInt(2));
+            assertTrue (rs.next());
+            assertEquals(C_VALUE,rs.getString(1));
+            assertEquals(1,rs.getInt(2));
+
+            assertFalse(rs.next());
+
+            // (groupby) groupby orderby offset
+            query = "SELECT t.c, count(*) FROM (SELECT count(*) c FROM aTable GROUP BY a_string) AS t GROUP BY t.c ORDER BY count(*) DESC OFFSET 1";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(1, rs.getInt(1));
+            assertEquals(1, rs.getInt(2));
+
+            assertFalse(rs.next());
+
         } finally {
             conn.close();
         }
@@ -508,11 +579,115 @@ public class DerivedTableIT extends BaseClientManagedTimeIT {
             assertEquals(10,rs.getInt(2));
 
             assertFalse(rs.next());
+            
+            // (union) groupby limit
+            query = "SELECT a_string, count(*) FROM (SELECT a_string FROM aTable where a_byte < 4 union all SELECT a_string FROM aTable where a_byte > 8) group by a_string limit 2";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue (rs.next());
+            assertEquals(A_VALUE,rs.getString(1));
+            assertEquals(3,rs.getInt(2));
+            assertTrue (rs.next());
+            assertEquals(C_VALUE,rs.getString(1));
+            assertEquals(1,rs.getInt(2));
+
+            assertFalse(rs.next());            
         } finally {
             conn.close();
         }
     }
-    
+
+    @Test
+    public void testDerivedTableWithOffset() throws Exception {
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 1));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+        try {
+            // (LIMIT OFFSET )
+            String query = "SELECT t.eid FROM (SELECT entity_id eid FROM aTable LIMIT 2 OFFSET 1) AS t";
+            PreparedStatement statement = conn.prepareStatement(query);
+            ResultSet rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(ROW2, rs.getString(1));
+            assertTrue(rs.next());
+            assertEquals(ROW3, rs.getString(1));
+
+            assertFalse(rs.next());
+
+            // (OFFSET) limit
+            query = "SELECT t.eid FROM (SELECT entity_id eid FROM aTable OFFSET 1) AS t LIMIT 2";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(ROW2, rs.getString(1));
+            assertTrue(rs.next());
+            assertEquals(ROW3, rs.getString(1));
+
+            assertFalse(rs.next());
+
+            // (limit OFFSET) limit OFFSET
+            query = "SELECT t.eid FROM (SELECT entity_id eid FROM aTable LIMIT 2 OFFSET 1) AS t LIMIT 4 OFFSET 1";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(ROW3, rs.getString(1));
+            assertFalse(rs.next());
+
+            // (limit OFFSET) limit 2
+            query = "SELECT t.eid FROM (SELECT entity_id eid FROM aTable LIMIT 4 OFFSET 1) AS t LIMIT 2";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(ROW2, rs.getString(1));
+            assertTrue(rs.next());
+            assertEquals(ROW3, rs.getString(1));
+
+            assertFalse(rs.next());
+
+            // (limit ? OFFSET ?) limit ? OFFSET ?
+            query = "SELECT t.eid FROM (SELECT entity_id eid FROM aTable LIMIT ? OFFSET ?) AS t LIMIT ? OFFSET ?";
+            statement = conn.prepareStatement(query);
+            statement.setInt(1, 4);
+            statement.setInt(2, 2);
+            statement.setInt(3, 2);
+            statement.setInt(4, 2);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(ROW5, rs.getString(1));
+            assertTrue(rs.next());
+            assertEquals(ROW6, rs.getString(1));
+            assertFalse(rs.next());
+
+            // (groupby orderby OFFSET)
+            query = "SELECT a, s FROM (SELECT a_string a, sum(a_byte) s FROM aTable GROUP BY a_string ORDER BY sum(a_byte) OFFSET 1)";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(A_VALUE, rs.getString(1));
+            assertEquals(10, rs.getInt(2));
+            assertTrue(rs.next());
+            assertEquals(B_VALUE, rs.getString(1));
+            assertEquals(26, rs.getInt(2));
+
+            assertFalse(rs.next());
+
+            // (union OFFSET) groupby 
+            query = "SELECT a_string, count(*) FROM (SELECT a_string FROM aTable where a_byte < 4 union all SELECT a_string FROM aTable where a_byte > 8 OFFSET 1) group by a_string";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue (rs.next());
+            assertEquals(A_VALUE,rs.getString(1));
+            assertEquals(2,rs.getInt(2));
+            assertTrue (rs.next());
+            assertEquals(C_VALUE,rs.getString(1));
+            assertEquals(1,rs.getInt(2));
+            assertFalse(rs.next());
+        } finally {
+            conn.close();
+        }
+    }
+
     @Test
     public void testDerivedTableWithDistinct() throws Exception {
         long ts = nextTimestamp();
@@ -670,6 +845,15 @@ public class DerivedTableIT extends BaseClientManagedTimeIT {
             
             // count (subquery)
             query = "SELECT count(*) FROM (SELECT * FROM aTable WHERE (organization_id, entity_id) in (SELECT organization_id, entity_id FROM aTable WHERE a_byte != 8)) AS t";
+            statement = conn.prepareStatement(query);
+            rs = statement.executeQuery();
+            assertTrue (rs.next());
+            assertEquals(8,rs.getInt(1));
+
+            assertFalse(rs.next());
+            
+            // count (orderby)
+            query = "SELECT count(a_byte) FROM (SELECT * FROM aTable order by a_integer) AS t where a_byte != 8";
             statement = conn.prepareStatement(query);
             rs = statement.executeQuery();
             assertTrue (rs.next());

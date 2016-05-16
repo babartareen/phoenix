@@ -95,17 +95,11 @@ public class QueryOptimizer {
         return plans.get(0);
     }
     
-    public List<QueryPlan> getBestPlan(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver, List<? extends PDatum> targetColumns, ParallelIteratorFactory parallelIteratorFactory) throws SQLException {
-        return getApplicablePlans(statement, select, resolver, targetColumns, parallelIteratorFactory, true);
+    public List<QueryPlan> getBestPlan(QueryPlan dataPlan, PhoenixStatement statement, SelectStatement select, ColumnResolver resolver, List<? extends PDatum> targetColumns, ParallelIteratorFactory parallelIteratorFactory) throws SQLException {
+        return getApplicablePlans(dataPlan, statement, targetColumns, parallelIteratorFactory, true);
     }
     
-    public List<QueryPlan> getApplicablePlans(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver, List<? extends PDatum> targetColumns, ParallelIteratorFactory parallelIteratorFactory) throws SQLException {
-        return getApplicablePlans(statement, select, resolver, targetColumns, parallelIteratorFactory, false);
-    }
-    
-    private List<QueryPlan> getApplicablePlans(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver, List<? extends PDatum> targetColumns, ParallelIteratorFactory parallelIteratorFactory, boolean stopAtBestPlan) throws SQLException {
-        QueryCompiler compiler = new QueryCompiler(statement, select, resolver, targetColumns, parallelIteratorFactory, new SequenceManager(statement));
-        QueryPlan dataPlan = compiler.compile();
+    public List<QueryPlan> getApplicablePlans(QueryPlan dataPlan, PhoenixStatement statement, SelectStatement select, ColumnResolver resolver, List<? extends PDatum> targetColumns, ParallelIteratorFactory parallelIteratorFactory) throws SQLException {
         return getApplicablePlans(dataPlan, statement, targetColumns, parallelIteratorFactory, false);
     }
     
@@ -159,7 +153,7 @@ public class QueryOptimizer {
             }
         }
         
-        return hintedPlan == null ? orderPlansBestToWorst(select, plans) : plans;
+        return hintedPlan == null ? orderPlansBestToWorst(select, plans, stopAtBestPlan) : plans;
     }
     
     private static QueryPlan getHintedQueryPlan(PhoenixStatement statement, SelectStatement select, List<PTable> indexes, List<? extends PDatum> targetColumns, ParallelIteratorFactory parallelIteratorFactory, List<QueryPlan> plans) throws SQLException {
@@ -221,7 +215,8 @@ public class QueryOptimizer {
     
     private static QueryPlan addPlan(PhoenixStatement statement, SelectStatement select, PTable index, List<? extends PDatum> targetColumns, ParallelIteratorFactory parallelIteratorFactory, QueryPlan dataPlan, boolean isHinted) throws SQLException {
         int nColumns = dataPlan.getProjector().getColumnCount();
-        String alias = '"' + dataPlan.getTableRef().getTableAlias() + '"'; // double quote in case it's case sensitive
+        String tableAlias = dataPlan.getTableRef().getTableAlias();
+		String alias = tableAlias==null ? null : '"' + tableAlias + '"'; // double quote in case it's case sensitive
         String schemaName = index.getParentSchemaName().getString();
         schemaName = schemaName.length() == 0 ? null :  '"' + schemaName + '"';
 
@@ -290,7 +285,7 @@ public class QueryOptimizer {
                             aliasedNodes.add(FACTORY.aliasedNode(null, indexColNode));
                             nodes.add(new ColumnParseNode(null, '"' + column.getName().getString() + '"'));
                         }
-                        SelectStatement innerSelect = FACTORY.select(indexSelect.getFrom(), indexSelect.getHint(), false, aliasedNodes, where, null, null, null, indexSelect.getLimit(), indexSelect.getBindCount(), false, indexSelect.hasSequence(), Collections.<SelectStatement>emptyList(), indexSelect.getUdfParseNodes());
+                        SelectStatement innerSelect = FACTORY.select(indexSelect.getFrom(), indexSelect.getHint(), false, aliasedNodes, where, null, null, null, null, null, indexSelect.getBindCount(), false, indexSelect.hasSequence(), Collections.<SelectStatement>emptyList(), indexSelect.getUdfParseNodes());
                         ParseNode outerWhere = FACTORY.in(nodes.size() == 1 ? nodes.get(0) : FACTORY.rowValueConstructor(nodes), FACTORY.subquery(innerSelect, false), false, true);
                         ParseNode extractedCondition = whereRewriter.getExtractedCondition();
                         if (extractedCondition != null) {
@@ -324,7 +319,7 @@ public class QueryOptimizer {
      * @param plans the list of candidate plans
      * @return list of plans ordered from best to worst.
      */
-    private List<QueryPlan> orderPlansBestToWorst(SelectStatement select, List<QueryPlan> plans) {
+    private List<QueryPlan> orderPlansBestToWorst(SelectStatement select, List<QueryPlan> plans, boolean stopAtBestPlan) {
         final QueryPlan dataPlan = plans.get(0);
         if (plans.size() == 1) {
             return plans;
@@ -335,10 +330,14 @@ public class QueryOptimizer {
          * keys), then favor those first.
          */
         List<QueryPlan> candidates = Lists.newArrayListWithExpectedSize(plans.size());
-        for (QueryPlan plan : plans) {
-            if (plan.getContext().getScanRanges().isPointLookup()) {
-                candidates.add(plan);
+        if (stopAtBestPlan) { // If we're stopping at the best plan, only consider point lookups if there are any
+            for (QueryPlan plan : plans) {
+                if (plan.getContext().getScanRanges().isPointLookup()) {
+                    candidates.add(plan);
+                }
             }
+        } else {
+            candidates.addAll(plans);
         }
         /**
          * If we have a plan(s) that removes the order by, choose from among these,

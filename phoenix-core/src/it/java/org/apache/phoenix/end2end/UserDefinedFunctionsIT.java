@@ -24,18 +24,18 @@ import static org.apache.phoenix.util.PhoenixRuntime.JDBC_PROTOCOL;
 import static org.apache.phoenix.util.PhoenixRuntime.JDBC_PROTOCOL_SEPARATOR;
 import static org.apache.phoenix.util.PhoenixRuntime.JDBC_PROTOCOL_TERMINATOR;
 import static org.apache.phoenix.util.PhoenixRuntime.PHOENIX_TEST_DRIVER_URL_PARAM;
+import static org.apache.phoenix.util.TestUtil.JOIN_ITEM_TABLE_FULL_NAME;
+import static org.apache.phoenix.util.TestUtil.JOIN_SUPPLIER_TABLE_FULL_NAME;
 import static org.apache.phoenix.util.TestUtil.LOCALHOST;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -54,11 +54,8 @@ import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HBaseTestingUtility;
-import org.apache.hadoop.io.IOUtils;
 import org.apache.phoenix.expression.function.UDFExpression;
 import org.apache.phoenix.jdbc.PhoenixTestDriver;
 import org.apache.phoenix.query.QueryServices;
@@ -259,7 +256,7 @@ public class UserDefinedFunctionsIT extends BaseOwnClusterIT{
         Map<String, String> props = Maps.newHashMapWithExpectedSize(1);
         props.put(QueryServices.ALLOW_USER_DEFINED_FUNCTIONS_ATTRIB, "true");
         props.put(QueryServices.DYNAMIC_JARS_DIR_KEY,string+"/hbase/tmpjars/");
-        driver = initAndRegisterDriver(url, new ReadOnlyProps(props.entrySet().iterator()));
+        driver = initAndRegisterTestDriver(url, new ReadOnlyProps(props.entrySet().iterator()));
         compileTestClass(MY_REVERSE_CLASS_NAME, MY_REVERSE_PROGRAM, 1);
         compileTestClass(MY_SUM_CLASS_NAME, MY_SUM_PROGRAM, 2);
         compileTestClass(MY_ARRAY_INDEX_CLASS_NAME, MY_ARRAY_INDEX_PROGRAM, 3);
@@ -788,6 +785,61 @@ public class UserDefinedFunctionsIT extends BaseOwnClusterIT{
         assertEquals(1, rs.getInt(2));
         assertEquals("kcoj", rs.getString(3));
         assertFalse(rs.next());
+    }
+
+    @Test
+    public void testUdfWithJoin() throws Exception {
+        String query = "SELECT /*+ USE_SORT_MERGE_JOIN*/ item.\"item_id\", item.name, supp.\"supplier_id\", myreverse8(supp.name) FROM "
+                + JOIN_SUPPLIER_TABLE_FULL_NAME + " supp RIGHT JOIN " + JOIN_ITEM_TABLE_FULL_NAME
+                + " item ON myreverse8(item.\"supplier_id\") = myreverse8(supp.\"supplier_id\") ORDER BY \"item_id\"";
+        Connection conn = driver.connect(url, EMPTY_PROPS);
+        initJoinTableValues(url, null, null);
+        conn.createStatement().execute(
+                "create function myreverse8(VARCHAR) returns VARCHAR as 'org.apache.phoenix.end2end.MyReverse' using jar "
+                        + "'" + util.getConfiguration().get(DYNAMIC_JARS_DIR_KEY) + "/myjar1.jar" + "'");
+        try {
+            PreparedStatement statement = conn.prepareStatement(query);
+            ResultSet rs = statement.executeQuery();
+            assertTrue(rs.next());
+            assertEquals(rs.getString(1), "0000000001");
+            assertEquals(rs.getString(2), "T1");
+            assertEquals(rs.getString(3), "0000000001");
+            assertEquals(rs.getString(4), "1S");
+            assertTrue(rs.next());
+            assertEquals(rs.getString(1), "0000000002");
+            assertEquals(rs.getString(2), "T2");
+            assertEquals(rs.getString(3), "0000000001");
+            assertEquals(rs.getString(4), "1S");
+            assertTrue(rs.next());
+            assertEquals(rs.getString(1), "0000000003");
+            assertEquals(rs.getString(2), "T3");
+            assertEquals(rs.getString(3), "0000000002");
+            assertEquals(rs.getString(4), "2S");
+            assertTrue(rs.next());
+            assertEquals(rs.getString(1), "0000000004");
+            assertEquals(rs.getString(2), "T4");
+            assertEquals(rs.getString(3), "0000000002");
+            assertEquals(rs.getString(4), "2S");
+            assertTrue(rs.next());
+            assertEquals(rs.getString(1), "0000000005");
+            assertEquals(rs.getString(2), "T5");
+            assertEquals(rs.getString(3), "0000000005");
+            assertEquals(rs.getString(4), "5S");
+            assertTrue(rs.next());
+            assertEquals(rs.getString(1), "0000000006");
+            assertEquals(rs.getString(2), "T6");
+            assertEquals(rs.getString(3), "0000000006");
+            assertEquals(rs.getString(4), "6S");
+            assertTrue(rs.next());
+            assertEquals(rs.getString(1), "invalid001");
+            assertEquals(rs.getString(2), "INVALID-1");
+            assertNull(rs.getString(3));
+            assertNull(rs.getString(4));
+
+            assertFalse(rs.next());
+        } finally {
+            conn.close();
+        }
     }
 
     @Test

@@ -34,17 +34,24 @@ import javax.annotation.Nullable;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.util.Addressing;
 import org.apache.hadoop.hbase.zookeeper.ZKConfig;
+import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.iterate.ResultIterator;
-import org.apache.phoenix.jdbc.PhoenixDriver;
+import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixEmbeddedDriver;
 import org.apache.phoenix.parse.HintNode;
 import org.apache.phoenix.parse.HintNode.Hint;
 import org.apache.phoenix.parse.WildcardParseNode;
+import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.query.QueryServices;
+import org.apache.phoenix.query.QueryServicesOptions;
+import org.apache.phoenix.schema.SortOrder;
+import org.apache.phoenix.schema.tuple.Tuple;
+import org.apache.phoenix.schema.types.PInteger;
 
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
@@ -80,7 +87,9 @@ public final class QueryUtil {
     private static final String SELECT = "SELECT";
     private static final String FROM = "FROM";
     private static final String WHERE = "WHERE";
+    private static final String AND = "AND";
     private static final String[] CompareOpString = new String[CompareOp.values().length];
+
     static {
         CompareOpString[CompareOp.EQUAL.ordinal()] = "=";
         CompareOpString[CompareOp.NOT_EQUAL.ordinal()] = "!=";
@@ -248,6 +257,13 @@ public final class QueryUtil {
         return getUrlInternal(zkQuorum, port, znodeParent);
     }
 
+    /**
+     * Create the Phoenix JDBC connection URL from the provided cluster connection details.
+     */
+    public static String getUrl(String zkQuorum, Integer port, String znodeParent) {
+        return getUrlInternal(zkQuorum, port, znodeParent);
+    }
+
     private static String getUrlInternal(String zkQuorum, Integer port, String znodeParent) {
         return new PhoenixEmbeddedDriver.ConnectionInfo(zkQuorum, port, znodeParent).toUrl()
                 + PhoenixRuntime.JDBC_PROTOCOL_TERMINATOR;
@@ -279,14 +295,31 @@ public final class QueryUtil {
         return buf.toString();
     }
 
+    /**
+     * @return {@link PhoenixConnection} with NO_UPGRADE_ATTRIB set so that we don't initiate server upgrade
+     */
+    public static Connection getConnectionOnServer(Configuration conf) throws ClassNotFoundException,
+            SQLException {
+        return getConnectionOnServer(new Properties(), conf);
+    }
+
+    /**
+     * @return {@link PhoenixConnection} with NO_UPGRADE_ATTRIB set so that we don't initiate server upgrade
+     */
+    public static Connection getConnectionOnServer(Properties props, Configuration conf)
+            throws ClassNotFoundException,
+            SQLException {
+        props.setProperty(PhoenixRuntime.NO_UPGRADE_ATTRIB, Boolean.TRUE.toString());
+        return getConnection(props, conf);
+    }
+
     public static Connection getConnection(Configuration conf) throws ClassNotFoundException,
             SQLException {
         return getConnection(new Properties(), conf);
     }
-
-    public static Connection getConnection(Properties props, Configuration conf)
-            throws ClassNotFoundException,
-            SQLException {
+    
+    private static Connection getConnection(Properties props, Configuration conf)
+            throws ClassNotFoundException, SQLException {
         String url = getConnectionUrl(props, conf);
         LOG.info("Creating connection with the jdbc url: " + url);
         PropertiesUtil.extractProperties(props, conf);
@@ -296,15 +329,11 @@ public final class QueryUtil {
     public static String getConnectionUrl(Properties props, Configuration conf)
             throws ClassNotFoundException, SQLException {
         // TODO: props is ignored!
-        // make sure we load the phoenix driver
-        Class.forName(PhoenixDriver.class.getName());
-
         // read the hbase properties from the configuration
         String server = ZKConfig.getZKQuorumServersString(conf);
         // could be a comma-separated list
         String[] rawServers = server.split(",");
         List<String> servers = new ArrayList<String>(rawServers.length);
-        boolean first = true;
         int port = -1;
         for (String serverPort : rawServers) {
             try {
@@ -333,8 +362,13 @@ public final class QueryUtil {
         server = Joiner.on(',').join(servers);
         String znodeParent = conf.get(HConstants.ZOOKEEPER_ZNODE_PARENT,
                 HConstants.DEFAULT_ZOOKEEPER_ZNODE_PARENT);
-
-        return getUrl(server, port, znodeParent);
+        String url = getUrl(server, port, znodeParent);
+        // Mainly for testing to tack on the test=true part to ensure driver is found on server
+        String extraArgs = conf.get(QueryServices.EXTRA_JDBC_ARGUMENTS_ATTRIB, QueryServicesOptions.DEFAULT_EXTRA_JDBC_ARGUMENTS);
+        if (extraArgs.length() > 0) {
+            url += extraArgs + PhoenixRuntime.JDBC_PROTOCOL_TERMINATOR;
+        }
+        return url;
     }
     
     public static String getViewStatement(String schemaName, String tableName, String where) {
@@ -343,6 +377,33 @@ public final class QueryUtil {
                 (schemaName == null || schemaName.length() == 0 ? "" : ("\"" + schemaName + "\".")) +
                 ("\"" + tableName + "\" ") +
                 (WHERE + " " + where);
+    }
+
+    public static Integer getOffsetLimit(Integer limit, Integer offset) {
+        if (limit == null) {
+            return null;
+        } else if (offset == null) {
+            return limit;
+        } else {
+            return limit + offset;
+        }
+
+    }
+
+    public static Integer getRemainingOffset(Tuple offsetTuple) {
+        if (offsetTuple != null) {
+            ImmutableBytesPtr rowKeyPtr = new ImmutableBytesPtr();
+            offsetTuple.getKey(rowKeyPtr);
+            if (QueryConstants.OFFSET_ROW_KEY_PTR.compareTo(rowKeyPtr) == 0) {
+                Cell cell = offsetTuple.getValue(QueryConstants.OFFSET_FAMILY, QueryConstants.OFFSET_COLUMN);
+                return PInteger.INSTANCE.toObject(cell.getValueArray(), cell.getValueOffset(), cell.getValueLength(), PInteger.INSTANCE, SortOrder.ASC, null, null);
+            }
+        }
+        return null;
+    }
+    
+    public static String getViewPartitionClause(String partitionColumnName, long autoPartitionNum) {
+        return partitionColumnName  + " " + toSQL(CompareOp.EQUAL) + " " + autoPartitionNum;
     }
     
 }

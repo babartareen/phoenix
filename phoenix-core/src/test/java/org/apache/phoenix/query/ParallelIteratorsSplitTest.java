@@ -29,6 +29,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.client.Scan;
@@ -50,12 +51,12 @@ import org.apache.phoenix.iterate.SpoolingResultIterator;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixParameterMetaData;
 import org.apache.phoenix.jdbc.PhoenixStatement;
+import org.apache.phoenix.jdbc.PhoenixStatement.Operation;
 import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.parse.PFunction;
+import org.apache.phoenix.parse.PSchema;
 import org.apache.phoenix.parse.SelectStatement;
-import org.apache.phoenix.schema.types.PChar;
 import org.apache.phoenix.schema.ColumnRef;
-import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.schema.PDatum;
 import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.schema.PTableKey;
@@ -63,6 +64,8 @@ import org.apache.phoenix.schema.RowKeySchema;
 import org.apache.phoenix.schema.RowKeySchema.RowKeySchemaBuilder;
 import org.apache.phoenix.schema.SortOrder;
 import org.apache.phoenix.schema.TableRef;
+import org.apache.phoenix.schema.types.PChar;
+import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.PropertiesUtil;
 import org.junit.Test;
@@ -71,6 +74,7 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
 import com.google.common.base.Function;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 
 
@@ -104,7 +108,7 @@ public class ParallelIteratorsSplitTest extends BaseConnectionlessQueryTest {
         Connection conn = DriverManager.getConnection(getUrl(), props);
         PhoenixConnection pconn = conn.unwrap(PhoenixConnection.class);
         
-        PTable table = pconn.getMetaDataCache().getTable(new PTableKey(pconn.getTenantId(), TABLE_NAME));
+        PTable table = pconn.getTable(new PTableKey(pconn.getTenantId(), TABLE_NAME));
         TableRef tableRef = new TableRef(table);
         List<HRegionLocation> regions = pconn.getQueryServices().getAllTableRegions(tableRef.getTable().getPhysicalName().getBytes());
         List<KeyRange> ranges = getSplits(tableRef, scan, regions, scanRanges);
@@ -345,13 +349,24 @@ public class ParallelIteratorsSplitTest extends BaseConnectionlessQueryTest {
             public boolean hasUDFs() {
                 return false;
             }
+
+            @Override
+            public PSchema resolveSchema(String schemaName) throws SQLException {
+                return null;
+            }
+
+            @Override
+            public List<PSchema> getSchemas() {
+                return null;
+            }
         };
         PhoenixConnection connection = DriverManager.getConnection(getUrl(), PropertiesUtil.deepCopy(TEST_PROPERTIES)).unwrap(PhoenixConnection.class);
         final PhoenixStatement statement = new PhoenixStatement(connection);
         final StatementContext context = new StatementContext(statement, resolver, scan, new SequenceManager(statement));
         context.setScanRanges(scanRanges);
         ParallelIterators parallelIterators = new ParallelIterators(new QueryPlan() {
-
+            private final Set<TableRef> tableRefs = ImmutableSet.of(tableRef);
+            
             @Override
             public StatementContext getContext() {
                 return context;
@@ -371,7 +386,12 @@ public class ParallelIteratorsSplitTest extends BaseConnectionlessQueryTest {
             public ResultIterator iterator(ParallelScanGrouper scanGrouper) throws SQLException {
                 return ResultIterator.EMPTY_ITERATOR;
             }
-            
+
+            @Override
+            public ResultIterator iterator(ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
+                return ResultIterator.EMPTY_ITERATOR;
+            }
+
             @Override
             public ResultIterator iterator() throws SQLException {
                 return ResultIterator.EMPTY_ITERATOR;
@@ -380,6 +400,11 @@ public class ParallelIteratorsSplitTest extends BaseConnectionlessQueryTest {
             @Override
             public long getEstimatedSize() {
                 return 0;
+            }
+
+            @Override
+            public Set<TableRef> getSourceRefs() {
+                return tableRefs;
             }
 
             @Override
@@ -394,6 +419,11 @@ public class ParallelIteratorsSplitTest extends BaseConnectionlessQueryTest {
 
             @Override
             public Integer getLimit() {
+                return null;
+            }
+
+            @Override
+            public Integer getOffset() {
                 return null;
             }
 
@@ -433,11 +463,16 @@ public class ParallelIteratorsSplitTest extends BaseConnectionlessQueryTest {
             }
 
             @Override
+            public Operation getOperation() {
+                return Operation.QUERY;
+            }
+            
+            @Override
             public boolean useRoundRobinIterator() {
                 return false;
             }
             
-        }, null, new SpoolingResultIterator.SpoolingResultIteratorFactory(context.getConnection().getQueryServices()));
+        }, null, new SpoolingResultIterator.SpoolingResultIteratorFactory(context.getConnection().getQueryServices()), context.getScan());
         List<KeyRange> keyRanges = parallelIterators.getSplits();
         return keyRanges;
     }

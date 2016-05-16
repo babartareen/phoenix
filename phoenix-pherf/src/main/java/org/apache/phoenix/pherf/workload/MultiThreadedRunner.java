@@ -57,14 +57,14 @@ class MultiThreadedRunner implements Runnable {
      * @param executionDurationInMs
      */
     MultiThreadedRunner(String threadName, Query query, DataModelResult dataModelResult,
-            ThreadTime threadTime, long numberOfExecutions, long executionDurationInMs) {
+            ThreadTime threadTime, long numberOfExecutions, long executionDurationInMs, boolean writeRuntimeResults) {
         this.query = query;
         this.threadName = threadName;
         this.threadTime = threadTime;
         this.dataModelResult = dataModelResult;
         this.numberOfExecutions = numberOfExecutions;
         this.executionDurationInMs = executionDurationInMs;
-        this.resultManager = new ResultManager(dataModelResult.getName());
+       	this.resultManager = new ResultManager(dataModelResult.getName(), writeRuntimeResults);
     }
 
     /**
@@ -89,6 +89,10 @@ class MultiThreadedRunner implements Runnable {
                 e.printStackTrace();
             }
         }
+
+        // Make sure all result have been dumped before exiting
+        resultManager.flush();
+
         logger.info("\n\nThread exiting." + threadName + "\n\n");
     }
 

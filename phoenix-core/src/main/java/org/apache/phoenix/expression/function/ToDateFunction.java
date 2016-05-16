@@ -53,8 +53,8 @@ import org.apache.phoenix.util.DateUtil;
 public class ToDateFunction extends ScalarFunction {
     public static final String NAME = "TO_DATE";
     private DateUtil.DateTimeParser dateParser;
-    private String dateFormat;
-    private String timeZoneId;
+    protected String dateFormat;
+    protected String timeZoneId;
 
     public ToDateFunction() {
     }
@@ -62,6 +62,15 @@ public class ToDateFunction extends ScalarFunction {
     public ToDateFunction(List<Expression> children, String dateFormat, String timeZoneId) throws SQLException {
         super(children);
         init(dateFormat, timeZoneId);
+    }
+    
+    @Override
+    public ToDateFunction clone(List<Expression> children) {
+    	try {
+            return new ToDateFunction(children, dateFormat, timeZoneId);
+        } catch (Exception e) {
+            throw new RuntimeException(e); // Impossible, since it was originally constructed this way
+        }
     }
     
     private void init(String dateFormat, String timeZoneId) {

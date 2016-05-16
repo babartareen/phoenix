@@ -68,6 +68,15 @@ public class ToCharFunction extends ScalarFunction {
     }
     
     @Override
+    public ToCharFunction clone(List<Expression> children) {
+    	try {
+            return new ToCharFunction(children, type, formatString, formatter);
+        } catch (Exception e) {
+            throw new RuntimeException(e); // Impossible, since it was originally constructed this way
+        }
+    }
+    
+    @Override
     public int hashCode() {
         final int prime = 31;
         int result = 1;

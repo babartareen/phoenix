@@ -17,18 +17,13 @@
  */
 package org.apache.phoenix.mapreduce.util;
 
+import static org.apache.commons.lang.StringUtils.isNotEmpty;
+
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
-
-import com.google.common.base.Function;
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Splitter;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -41,14 +36,16 @@ import org.apache.hadoop.mapreduce.lib.db.DBInputFormat.NullDBWritable;
 import org.apache.hadoop.mapreduce.lib.db.DBWritable;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.phoenix.jdbc.PhoenixConnection;
-import org.apache.phoenix.mapreduce.CsvToKeyValueMapper.DefaultImportPreUpsertKeyValueProcessor;
+import org.apache.phoenix.mapreduce.FormatToBytesWritableMapper;
 import org.apache.phoenix.mapreduce.ImportPreUpsertKeyValueProcessor;
 import org.apache.phoenix.mapreduce.PhoenixInputFormat;
 import org.apache.phoenix.util.ColumnInfo;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.QueryUtil;
 
-import static org.apache.commons.lang.StringUtils.isNotEmpty;
+import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 
 /**
  * A utility class to set properties on the {#link Configuration} instance.
@@ -90,14 +87,14 @@ public final class PhoenixConfigurationUtil {
     
     public static final String CURRENT_SCN_VALUE = "phoenix.mr.currentscn.value";
     
+    public static final String TX_SCN_VALUE = "phoenix.mr.txscn.value";
+    
     /** Configuration key for the class name of an ImportPreUpsertKeyValueProcessor */
     public static final String UPSERT_HOOK_CLASS_CONFKEY = "phoenix.mapreduce.import.kvprocessor";
 
     public static final String MAPREDUCE_INPUT_CLUSTER_QUORUM = "phoenix.mapreduce.input.cluster.quorum";
     
     public static final String MAPREDUCE_OUTPUT_CLUSTER_QUORUM = "phoneix.mapreduce.output.cluster.quorum";
-    
-    public static final String HBASE_ZOOKEEPER_CLIENT_PORT = "hbase.zookeeper.property.clientPort";
 
     public enum SchemaType {
         TABLE,
@@ -391,8 +388,18 @@ public final class PhoenixConfigurationUtil {
      */
     public static Integer getClientPort(final Configuration configuration) {
         Preconditions.checkNotNull(configuration);
-        String clientPortString = configuration.get(HBASE_ZOOKEEPER_CLIENT_PORT);
+        String clientPortString = configuration.get(HConstants.ZOOKEEPER_CLIENT_PORT);
         return clientPortString==null ? null : Integer.parseInt(clientPortString);
+    }
+
+    /**
+     * Returns the HBase zookeeper znode parent
+     * @param configuration
+     * @return
+     */
+    public static String getZNodeParent(final Configuration configuration) {
+        Preconditions.checkNotNull(configuration);
+        return configuration.get(HConstants.ZOOKEEPER_ZNODE_PARENT);
     }
 
     public static void loadHBaseConfiguration(Job job) throws IOException {
@@ -411,7 +418,7 @@ public final class PhoenixConfigurationUtil {
         Class<? extends ImportPreUpsertKeyValueProcessor> processorClass = null;
         try {
             processorClass = conf.getClass(
-                    UPSERT_HOOK_CLASS_CONFKEY, DefaultImportPreUpsertKeyValueProcessor.class,
+                    UPSERT_HOOK_CLASS_CONFKEY, FormatToBytesWritableMapper.DefaultImportPreUpsertKeyValueProcessor.class,
                     ImportPreUpsertKeyValueProcessor.class);
         } catch (Exception e) {
             throw new IllegalStateException("Couldn't load upsert hook class", e);

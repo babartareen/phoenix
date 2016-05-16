@@ -29,6 +29,7 @@ import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.filter.PageFilter;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.compile.GroupByCompiler.GroupBy;
 import org.apache.phoenix.compile.OrderByCompiler.OrderBy;
@@ -59,18 +60,21 @@ public abstract class ExplainTable {
     protected final OrderBy orderBy;
     protected final HintNode hint;
     protected final Integer limit;
+    protected final Integer offset;
    
     public ExplainTable(StatementContext context, TableRef table) {
-        this(context,table,GroupBy.EMPTY_GROUP_BY, OrderBy.EMPTY_ORDER_BY, HintNode.EMPTY_HINT_NODE, null);
+        this(context, table, GroupBy.EMPTY_GROUP_BY, OrderBy.EMPTY_ORDER_BY, HintNode.EMPTY_HINT_NODE, null, null);
     }
 
-    public ExplainTable(StatementContext context, TableRef table, GroupBy groupBy, OrderBy orderBy, HintNode hintNode, Integer limit) {
+    public ExplainTable(StatementContext context, TableRef table, GroupBy groupBy, OrderBy orderBy, HintNode hintNode,
+            Integer limit, Integer offset) {
         this.context = context;
         this.tableRef = table;
         this.groupBy = groupBy;
         this.orderBy = orderBy;
         this.hint = hintNode;
         this.limit = limit;
+        this.offset = offset;
     }
 
     private boolean explainSkipScan(StringBuilder buf) {
@@ -109,7 +113,7 @@ public abstract class ExplainTable {
             buf.append("TIMELINE-CONSISTENCY ");
         }
         if (hint.hasHint(Hint.SMALL)) {
-            buf.append("SMALL ");
+            buf.append(Hint.SMALL).append(" ");
         }
         if (OrderBy.REV_ROW_KEY_ORDER_BY.equals(orderBy)) {
             buf.append("REVERSE ");
@@ -119,17 +123,21 @@ public abstract class ExplainTable {
         } else {
             explainSkipScan(buf);
         }
-        buf.append("OVER " + tableRef.getTable().getPhysicalName().getString());
+        buf.append("OVER ").append(tableRef.getTable().getPhysicalName().getString());
         if (!scanRanges.isPointLookup()) {
             appendKeyRanges(buf);
         }
         planSteps.add(buf.toString());
+        if (context.getScan() != null && tableRef.getTable().getRowTimestampColPos() != -1) {
+            TimeRange range = context.getScan().getTimeRange();
+            planSteps.add("    ROW TIMESTAMP FILTER [" + range.getMin() + ", " + range.getMax() + ")");
+        }
         
+        PageFilter pageFilter = null;
+        FirstKeyOnlyFilter firstKeyOnlyFilter = null;
+        BooleanExpressionFilter whereFilter = null;
         Iterator<Filter> filterIterator = ScanUtil.getFilterIterator(scan);
         if (filterIterator.hasNext()) {
-            PageFilter pageFilter = null;
-            FirstKeyOnlyFilter firstKeyOnlyFilter = null;
-            BooleanExpressionFilter whereFilter = null;
             do {
                 Filter filter = filterIterator.next();
                 if (filter instanceof FirstKeyOnlyFilter) {
@@ -140,16 +148,21 @@ public abstract class ExplainTable {
                     whereFilter = (BooleanExpressionFilter)filter;
                 }
             } while (filterIterator.hasNext());
-            if (whereFilter != null) {
-                planSteps.add("    SERVER FILTER BY " + (firstKeyOnlyFilter == null ? "" : "FIRST KEY ONLY AND ") + whereFilter.toString());
-            } else if (firstKeyOnlyFilter != null) {
-                planSteps.add("    SERVER FILTER BY FIRST KEY ONLY");
+        }
+        if (whereFilter != null) {
+            planSteps.add("    SERVER FILTER BY " + (firstKeyOnlyFilter == null ? "" : "FIRST KEY ONLY AND ") + whereFilter.toString());
+        } else if (firstKeyOnlyFilter != null) {
+            planSteps.add("    SERVER FILTER BY FIRST KEY ONLY");
+        }
+        if (!orderBy.getOrderByExpressions().isEmpty() && groupBy.isEmpty()) { // with GROUP BY, sort happens client-side
+            planSteps.add("    SERVER" + (limit == null ? "" : " TOP " + limit + " ROW" + (limit == 1 ? "" : "S"))
+                    + " SORTED BY " + orderBy.getOrderByExpressions().toString());
+        } else {
+            if (offset != null) {
+                planSteps.add("    SERVER OFFSET " + offset);
             }
-            if (!orderBy.getOrderByExpressions().isEmpty() && groupBy.isEmpty()) { // with GROUP BY, sort happens client-side
-                planSteps.add("    SERVER" + (limit == null ? "" : " TOP " + limit + " ROW" + (limit == 1 ? "" : "S"))
-                        + " SORTED BY " + orderBy.getOrderByExpressions().toString());
-            } else if (pageFilter != null) {
-                planSteps.add("    SERVER " + pageFilter.getPageSize() + " ROW LIMIT");                
+            if (pageFilter != null) {
+                planSteps.add("    SERVER " + pageFilter.getPageSize() + " ROW LIMIT");
             }
         }
         Integer groupByLimit = null;

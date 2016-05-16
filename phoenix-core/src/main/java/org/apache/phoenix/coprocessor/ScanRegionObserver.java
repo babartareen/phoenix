@@ -23,22 +23,24 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
-import com.google.common.collect.Sets;
-
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.HRegionInfo;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.regionserver.Region;
 import org.apache.hadoop.hbase.regionserver.RegionScanner;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.phoenix.cache.GlobalCache;
 import org.apache.phoenix.cache.TenantCache;
+import org.apache.phoenix.execute.MutationState;
 import org.apache.phoenix.execute.TupleProjector;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.KeyValueColumnExpression;
@@ -46,20 +48,27 @@ import org.apache.phoenix.expression.OrderByExpression;
 import org.apache.phoenix.expression.function.ArrayIndexFunction;
 import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
 import org.apache.phoenix.index.IndexMaintainer;
+import org.apache.phoenix.iterate.OffsetResultIterator;
 import org.apache.phoenix.iterate.OrderedResultIterator;
 import org.apache.phoenix.iterate.RegionScannerResultIterator;
 import org.apache.phoenix.iterate.ResultIterator;
 import org.apache.phoenix.join.HashJoinInfo;
 import org.apache.phoenix.memory.MemoryManager.MemoryChunk;
+import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.schema.KeyValueSchema;
 import org.apache.phoenix.schema.KeyValueSchema.KeyValueSchemaBuilder;
 import org.apache.phoenix.schema.ValueBitSet;
+import org.apache.phoenix.schema.tuple.ResultTuple;
 import org.apache.phoenix.schema.tuple.Tuple;
+import org.apache.phoenix.schema.types.PInteger;
 import org.apache.phoenix.util.IndexUtil;
 import org.apache.phoenix.util.ScanUtil;
 import org.apache.phoenix.util.ServerUtil;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
+
+import co.cask.tephra.Transaction;
 
 
 /**
@@ -118,7 +127,8 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
                 orderByExpressions.add(orderByExpression);
             }
             ResultIterator inner = new RegionScannerResultIterator(s);
-            return new OrderedResultIterator(inner, orderByExpressions, thresholdBytes, limit >= 0 ? limit : null, estimatedRowSize);
+            return new OrderedResultIterator(inner, orderByExpressions, thresholdBytes, limit >= 0 ? limit : null, null,
+                    estimatedRowSize);
         } catch (IOException e) {
             throw new RuntimeException(e);
         } finally {
@@ -181,7 +191,11 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
                 region.getRegionInfo().getEndKey().length;
             ScanUtil.setRowKeyOffset(scan, offset);
         }
-
+        byte[] scanOffsetBytes = scan.getAttribute(BaseScannerRegionObserver.SCAN_OFFSET);
+        Integer scanOffset = null;
+        if (scanOffsetBytes != null) {
+            scanOffset = (Integer) PInteger.INSTANCE.toObject(scanOffsetBytes);
+        }
         RegionScanner innerScanner = s;
 
         Set<KeyValueColumnExpression> arrayKVRefs = Sets.newHashSet();
@@ -191,6 +205,7 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
         Region dataRegion = null;
         IndexMaintainer indexMaintainer = null;
         byte[][] viewConstants = null;
+        Transaction tx = null;
         ColumnReference[] dataColumns = IndexUtil.deserializeDataTableColumnsToJoin(scan);
         if (dataColumns != null) {
             tupleProjector = IndexUtil.getTupleProjector(scan, dataColumns);
@@ -199,26 +214,95 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
             List<IndexMaintainer> indexMaintainers = localIndexBytes == null ? null : IndexMaintainer.deserialize(localIndexBytes);
             indexMaintainer = indexMaintainers.get(0);
             viewConstants = IndexUtil.deserializeViewConstantsFromScan(scan);
+            byte[] txState = scan.getAttribute(BaseScannerRegionObserver.TX_STATE);
+            tx = MutationState.decodeTransaction(txState);
         }
 
         final TupleProjector p = TupleProjector.deserializeProjectorFromScan(scan);
         final HashJoinInfo j = HashJoinInfo.deserializeHashJoinFromScan(scan);
         innerScanner =
                 getWrappedScanner(c, innerScanner, arrayKVRefs, arrayFuncRefs, offset, scan,
-                    dataColumns, tupleProjector, dataRegion, indexMaintainer, viewConstants,
-                    kvSchema, kvSchemaBitSet, j == null ? p : null, ptr);
+                    dataColumns, tupleProjector, dataRegion, indexMaintainer, tx,
+                    viewConstants, kvSchema, kvSchemaBitSet, j == null ? p : null, ptr);
 
         final ImmutableBytesWritable tenantId = ScanUtil.getTenantId(scan);
         if (j != null) {
             innerScanner = new HashJoinRegionScanner(innerScanner, p, j, tenantId, c.getEnvironment());
         }
-
+        if (scanOffset != null) {
+            innerScanner = getOffsetScanner(c, innerScanner,
+                    new OffsetResultIterator(new RegionScannerResultIterator(innerScanner), scanOffset),
+                    scan.getAttribute(QueryConstants.LAST_SCAN) != null);
+        }
         final OrderedResultIterator iterator = deserializeFromScan(scan,innerScanner);
         if (iterator == null) {
             return innerScanner;
         }
         // TODO:the above wrapped scanner should be used here also
         return getTopNScanner(c, innerScanner, iterator, tenantId);
+    }
+
+    private RegionScanner getOffsetScanner(final ObserverContext<RegionCoprocessorEnvironment> c, final RegionScanner s,
+            final OffsetResultIterator iterator, final boolean isLastScan) throws IOException {
+        final Tuple firstTuple;
+        final Region region = c.getEnvironment().getRegion();
+        region.startRegionOperation();
+        try {
+            Tuple tuple = iterator.next();
+            if (tuple == null && !isLastScan) {
+                List<KeyValue> kvList = new ArrayList<KeyValue>(1);
+                KeyValue kv = new KeyValue(QueryConstants.OFFSET_ROW_KEY_BYTES, QueryConstants.OFFSET_FAMILY,
+                        QueryConstants.OFFSET_COLUMN, PInteger.INSTANCE.toBytes(iterator.getRemainingOffset()));
+                kvList.add(kv);
+                Result r = new Result(kvList);
+                firstTuple = new ResultTuple(r);
+            } else {
+                firstTuple = tuple;
+            }
+        } catch (Throwable t) {
+            ServerUtil.throwIOException(region.getRegionInfo().getRegionNameAsString(), t);
+            return null;
+        } finally {
+            region.closeRegionOperation();
+        }
+        return new BaseRegionScanner(s) {
+            private Tuple tuple = firstTuple;
+
+            @Override
+            public boolean isFilterDone() {
+                return tuple == null;
+            }
+
+            @Override
+            public boolean next(List<Cell> results) throws IOException {
+                try {
+                    if (isFilterDone()) { return false; }
+                    for (int i = 0; i < tuple.size(); i++) {
+                        results.add(tuple.getValue(i));
+                    }
+                    tuple = iterator.next();
+                    return !isFilterDone();
+                } catch (Throwable t) {
+                    ServerUtil.throwIOException(region.getRegionInfo().getRegionNameAsString(), t);
+                    return false;
+                }
+            }
+
+            @Override
+            public void close() throws IOException {
+                try {
+                    s.close();
+                } finally {
+                    try {
+                        if (iterator != null) {
+                            iterator.close();
+                        }
+                    } catch (SQLException e) {
+                        ServerUtil.throwIOException(region.getRegionInfo().getRegionNameAsString(), e);
+                    }
+                }
+            }
+        };
     }
 
     /**
@@ -247,17 +331,12 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
         } finally {
             region.closeRegionOperation();
         }
-        return new BaseRegionScanner() {
+        return new BaseRegionScanner(s) {
             private Tuple tuple = firstTuple;
 
             @Override
             public boolean isFilterDone() {
                 return tuple == null;
-            }
-
-            @Override
-            public HRegionInfo getRegionInfo() {
-                return s.getRegionInfo();
             }
 
             @Override
@@ -294,16 +373,6 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
                         chunk.close();
                     }
                 }
-            }
-
-            @Override
-            public long getMaxResultSize() {
-                return s.getMaxResultSize();
-            }
-
-            @Override
-            public int getBatch() {
-              return s.getBatch();
             }
         };
     }

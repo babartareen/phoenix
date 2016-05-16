@@ -249,6 +249,26 @@ public final class PTableProtos {
      */
     com.google.protobuf.ByteString
         getExpressionBytes();
+
+    // optional bool isRowTimestamp = 13;
+    /**
+     * <code>optional bool isRowTimestamp = 13;</code>
+     */
+    boolean hasIsRowTimestamp();
+    /**
+     * <code>optional bool isRowTimestamp = 13;</code>
+     */
+    boolean getIsRowTimestamp();
+
+    // optional bool isDynamic = 14;
+    /**
+     * <code>optional bool isDynamic = 14;</code>
+     */
+    boolean hasIsDynamic();
+    /**
+     * <code>optional bool isDynamic = 14;</code>
+     */
+    boolean getIsDynamic();
   }
   /**
    * Protobuf type {@code PColumn}
@@ -359,6 +379,16 @@ public final class PTableProtos {
             case 98: {
               bitField0_ |= 0x00000800;
               expression_ = input.readBytes();
+              break;
+            }
+            case 104: {
+              bitField0_ |= 0x00001000;
+              isRowTimestamp_ = input.readBool();
+              break;
+            }
+            case 112: {
+              bitField0_ |= 0x00002000;
+              isDynamic_ = input.readBool();
               break;
             }
           }
@@ -647,6 +677,38 @@ public final class PTableProtos {
       }
     }
 
+    // optional bool isRowTimestamp = 13;
+    public static final int ISROWTIMESTAMP_FIELD_NUMBER = 13;
+    private boolean isRowTimestamp_;
+    /**
+     * <code>optional bool isRowTimestamp = 13;</code>
+     */
+    public boolean hasIsRowTimestamp() {
+      return ((bitField0_ & 0x00001000) == 0x00001000);
+    }
+    /**
+     * <code>optional bool isRowTimestamp = 13;</code>
+     */
+    public boolean getIsRowTimestamp() {
+      return isRowTimestamp_;
+    }
+
+    // optional bool isDynamic = 14;
+    public static final int ISDYNAMIC_FIELD_NUMBER = 14;
+    private boolean isDynamic_;
+    /**
+     * <code>optional bool isDynamic = 14;</code>
+     */
+    public boolean hasIsDynamic() {
+      return ((bitField0_ & 0x00002000) == 0x00002000);
+    }
+    /**
+     * <code>optional bool isDynamic = 14;</code>
+     */
+    public boolean getIsDynamic() {
+      return isDynamic_;
+    }
+
     private void initFields() {
       columnNameBytes_ = com.google.protobuf.ByteString.EMPTY;
       familyNameBytes_ = com.google.protobuf.ByteString.EMPTY;
@@ -660,6 +722,8 @@ public final class PTableProtos {
       viewConstant_ = com.google.protobuf.ByteString.EMPTY;
       viewReferenced_ = false;
       expression_ = "";
+      isRowTimestamp_ = false;
+      isDynamic_ = false;
     }
     private byte memoizedIsInitialized = -1;
     public final boolean isInitialized() {
@@ -729,6 +793,12 @@ public final class PTableProtos {
       if (((bitField0_ & 0x00000800) == 0x00000800)) {
         output.writeBytes(12, getExpressionBytes());
       }
+      if (((bitField0_ & 0x00001000) == 0x00001000)) {
+        output.writeBool(13, isRowTimestamp_);
+      }
+      if (((bitField0_ & 0x00002000) == 0x00002000)) {
+        output.writeBool(14, isDynamic_);
+      }
       getUnknownFields().writeTo(output);
     }
 
@@ -785,6 +855,14 @@ public final class PTableProtos {
       if (((bitField0_ & 0x00000800) == 0x00000800)) {
         size += com.google.protobuf.CodedOutputStream
           .computeBytesSize(12, getExpressionBytes());
+      }
+      if (((bitField0_ & 0x00001000) == 0x00001000)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeBoolSize(13, isRowTimestamp_);
+      }
+      if (((bitField0_ & 0x00002000) == 0x00002000)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeBoolSize(14, isDynamic_);
       }
       size += getUnknownFields().getSerializedSize();
       memoizedSerializedSize = size;
@@ -869,6 +947,16 @@ public final class PTableProtos {
         result = result && getExpression()
             .equals(other.getExpression());
       }
+      result = result && (hasIsRowTimestamp() == other.hasIsRowTimestamp());
+      if (hasIsRowTimestamp()) {
+        result = result && (getIsRowTimestamp()
+            == other.getIsRowTimestamp());
+      }
+      result = result && (hasIsDynamic() == other.hasIsDynamic());
+      if (hasIsDynamic()) {
+        result = result && (getIsDynamic()
+            == other.getIsDynamic());
+      }
       result = result &&
           getUnknownFields().equals(other.getUnknownFields());
       return result;
@@ -929,6 +1017,14 @@ public final class PTableProtos {
       if (hasExpression()) {
         hash = (37 * hash) + EXPRESSION_FIELD_NUMBER;
         hash = (53 * hash) + getExpression().hashCode();
+      }
+      if (hasIsRowTimestamp()) {
+        hash = (37 * hash) + ISROWTIMESTAMP_FIELD_NUMBER;
+        hash = (53 * hash) + hashBoolean(getIsRowTimestamp());
+      }
+      if (hasIsDynamic()) {
+        hash = (37 * hash) + ISDYNAMIC_FIELD_NUMBER;
+        hash = (53 * hash) + hashBoolean(getIsDynamic());
       }
       hash = (29 * hash) + getUnknownFields().hashCode();
       memoizedHashCode = hash;
@@ -1063,6 +1159,10 @@ public final class PTableProtos {
         bitField0_ = (bitField0_ & ~0x00000400);
         expression_ = "";
         bitField0_ = (bitField0_ & ~0x00000800);
+        isRowTimestamp_ = false;
+        bitField0_ = (bitField0_ & ~0x00001000);
+        isDynamic_ = false;
+        bitField0_ = (bitField0_ & ~0x00002000);
         return this;
       }
 
@@ -1139,6 +1239,14 @@ public final class PTableProtos {
           to_bitField0_ |= 0x00000800;
         }
         result.expression_ = expression_;
+        if (((from_bitField0_ & 0x00001000) == 0x00001000)) {
+          to_bitField0_ |= 0x00001000;
+        }
+        result.isRowTimestamp_ = isRowTimestamp_;
+        if (((from_bitField0_ & 0x00002000) == 0x00002000)) {
+          to_bitField0_ |= 0x00002000;
+        }
+        result.isDynamic_ = isDynamic_;
         result.bitField0_ = to_bitField0_;
         onBuilt();
         return result;
@@ -1194,6 +1302,12 @@ public final class PTableProtos {
           bitField0_ |= 0x00000800;
           expression_ = other.expression_;
           onChanged();
+        }
+        if (other.hasIsRowTimestamp()) {
+          setIsRowTimestamp(other.getIsRowTimestamp());
+        }
+        if (other.hasIsDynamic()) {
+          setIsDynamic(other.getIsDynamic());
         }
         this.mergeUnknownFields(other.getUnknownFields());
         return this;
@@ -1725,6 +1839,72 @@ public final class PTableProtos {
   }
   bitField0_ |= 0x00000800;
         expression_ = value;
+        onChanged();
+        return this;
+      }
+
+      // optional bool isRowTimestamp = 13;
+      private boolean isRowTimestamp_ ;
+      /**
+       * <code>optional bool isRowTimestamp = 13;</code>
+       */
+      public boolean hasIsRowTimestamp() {
+        return ((bitField0_ & 0x00001000) == 0x00001000);
+      }
+      /**
+       * <code>optional bool isRowTimestamp = 13;</code>
+       */
+      public boolean getIsRowTimestamp() {
+        return isRowTimestamp_;
+      }
+      /**
+       * <code>optional bool isRowTimestamp = 13;</code>
+       */
+      public Builder setIsRowTimestamp(boolean value) {
+        bitField0_ |= 0x00001000;
+        isRowTimestamp_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional bool isRowTimestamp = 13;</code>
+       */
+      public Builder clearIsRowTimestamp() {
+        bitField0_ = (bitField0_ & ~0x00001000);
+        isRowTimestamp_ = false;
+        onChanged();
+        return this;
+      }
+
+      // optional bool isDynamic = 14;
+      private boolean isDynamic_ ;
+      /**
+       * <code>optional bool isDynamic = 14;</code>
+       */
+      public boolean hasIsDynamic() {
+        return ((bitField0_ & 0x00002000) == 0x00002000);
+      }
+      /**
+       * <code>optional bool isDynamic = 14;</code>
+       */
+      public boolean getIsDynamic() {
+        return isDynamic_;
+      }
+      /**
+       * <code>optional bool isDynamic = 14;</code>
+       */
+      public Builder setIsDynamic(boolean value) {
+        bitField0_ |= 0x00002000;
+        isDynamic_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional bool isDynamic = 14;</code>
+       */
+      public Builder clearIsDynamic() {
+        bitField0_ = (bitField0_ & ~0x00002000);
+        isDynamic_ = false;
         onChanged();
         return this;
       }
@@ -3128,6 +3308,61 @@ public final class PTableProtos {
      * <code>optional bool rowKeyOrderOptimizable = 26;</code>
      */
     boolean getRowKeyOrderOptimizable();
+
+    // optional bool transactional = 27;
+    /**
+     * <code>optional bool transactional = 27;</code>
+     */
+    boolean hasTransactional();
+    /**
+     * <code>optional bool transactional = 27;</code>
+     */
+    boolean getTransactional();
+
+    // optional int64 updateCacheFrequency = 28;
+    /**
+     * <code>optional int64 updateCacheFrequency = 28;</code>
+     */
+    boolean hasUpdateCacheFrequency();
+    /**
+     * <code>optional int64 updateCacheFrequency = 28;</code>
+     */
+    long getUpdateCacheFrequency();
+
+    // optional int64 indexDisableTimestamp = 29;
+    /**
+     * <code>optional int64 indexDisableTimestamp = 29;</code>
+     */
+    boolean hasIndexDisableTimestamp();
+    /**
+     * <code>optional int64 indexDisableTimestamp = 29;</code>
+     */
+    long getIndexDisableTimestamp();
+
+    // optional bool isNamespaceMapped = 30;
+    /**
+     * <code>optional bool isNamespaceMapped = 30;</code>
+     */
+    boolean hasIsNamespaceMapped();
+    /**
+     * <code>optional bool isNamespaceMapped = 30;</code>
+     */
+    boolean getIsNamespaceMapped();
+
+    // optional string autoParititonSeqName = 31;
+    /**
+     * <code>optional string autoParititonSeqName = 31;</code>
+     */
+    boolean hasAutoParititonSeqName();
+    /**
+     * <code>optional string autoParititonSeqName = 31;</code>
+     */
+    java.lang.String getAutoParititonSeqName();
+    /**
+     * <code>optional string autoParititonSeqName = 31;</code>
+     */
+    com.google.protobuf.ByteString
+        getAutoParititonSeqNameBytes();
   }
   /**
    * Protobuf type {@code PTable}
@@ -3326,6 +3561,31 @@ public final class PTableProtos {
             case 208: {
               bitField0_ |= 0x00200000;
               rowKeyOrderOptimizable_ = input.readBool();
+              break;
+            }
+            case 216: {
+              bitField0_ |= 0x00400000;
+              transactional_ = input.readBool();
+              break;
+            }
+            case 224: {
+              bitField0_ |= 0x00800000;
+              updateCacheFrequency_ = input.readInt64();
+              break;
+            }
+            case 232: {
+              bitField0_ |= 0x01000000;
+              indexDisableTimestamp_ = input.readInt64();
+              break;
+            }
+            case 240: {
+              bitField0_ |= 0x02000000;
+              isNamespaceMapped_ = input.readBool();
+              break;
+            }
+            case 250: {
+              bitField0_ |= 0x04000000;
+              autoParititonSeqName_ = input.readBytes();
               break;
             }
           }
@@ -3890,6 +4150,113 @@ public final class PTableProtos {
       return rowKeyOrderOptimizable_;
     }
 
+    // optional bool transactional = 27;
+    public static final int TRANSACTIONAL_FIELD_NUMBER = 27;
+    private boolean transactional_;
+    /**
+     * <code>optional bool transactional = 27;</code>
+     */
+    public boolean hasTransactional() {
+      return ((bitField0_ & 0x00400000) == 0x00400000);
+    }
+    /**
+     * <code>optional bool transactional = 27;</code>
+     */
+    public boolean getTransactional() {
+      return transactional_;
+    }
+
+    // optional int64 updateCacheFrequency = 28;
+    public static final int UPDATECACHEFREQUENCY_FIELD_NUMBER = 28;
+    private long updateCacheFrequency_;
+    /**
+     * <code>optional int64 updateCacheFrequency = 28;</code>
+     */
+    public boolean hasUpdateCacheFrequency() {
+      return ((bitField0_ & 0x00800000) == 0x00800000);
+    }
+    /**
+     * <code>optional int64 updateCacheFrequency = 28;</code>
+     */
+    public long getUpdateCacheFrequency() {
+      return updateCacheFrequency_;
+    }
+
+    // optional int64 indexDisableTimestamp = 29;
+    public static final int INDEXDISABLETIMESTAMP_FIELD_NUMBER = 29;
+    private long indexDisableTimestamp_;
+    /**
+     * <code>optional int64 indexDisableTimestamp = 29;</code>
+     */
+    public boolean hasIndexDisableTimestamp() {
+      return ((bitField0_ & 0x01000000) == 0x01000000);
+    }
+    /**
+     * <code>optional int64 indexDisableTimestamp = 29;</code>
+     */
+    public long getIndexDisableTimestamp() {
+      return indexDisableTimestamp_;
+    }
+
+    // optional bool isNamespaceMapped = 30;
+    public static final int ISNAMESPACEMAPPED_FIELD_NUMBER = 30;
+    private boolean isNamespaceMapped_;
+    /**
+     * <code>optional bool isNamespaceMapped = 30;</code>
+     */
+    public boolean hasIsNamespaceMapped() {
+      return ((bitField0_ & 0x02000000) == 0x02000000);
+    }
+    /**
+     * <code>optional bool isNamespaceMapped = 30;</code>
+     */
+    public boolean getIsNamespaceMapped() {
+      return isNamespaceMapped_;
+    }
+
+    // optional string autoParititonSeqName = 31;
+    public static final int AUTOPARITITONSEQNAME_FIELD_NUMBER = 31;
+    private java.lang.Object autoParititonSeqName_;
+    /**
+     * <code>optional string autoParititonSeqName = 31;</code>
+     */
+    public boolean hasAutoParititonSeqName() {
+      return ((bitField0_ & 0x04000000) == 0x04000000);
+    }
+    /**
+     * <code>optional string autoParititonSeqName = 31;</code>
+     */
+    public java.lang.String getAutoParititonSeqName() {
+      java.lang.Object ref = autoParititonSeqName_;
+      if (ref instanceof java.lang.String) {
+        return (java.lang.String) ref;
+      } else {
+        com.google.protobuf.ByteString bs = 
+            (com.google.protobuf.ByteString) ref;
+        java.lang.String s = bs.toStringUtf8();
+        if (bs.isValidUtf8()) {
+          autoParititonSeqName_ = s;
+        }
+        return s;
+      }
+    }
+    /**
+     * <code>optional string autoParititonSeqName = 31;</code>
+     */
+    public com.google.protobuf.ByteString
+        getAutoParititonSeqNameBytes() {
+      java.lang.Object ref = autoParititonSeqName_;
+      if (ref instanceof java.lang.String) {
+        com.google.protobuf.ByteString b = 
+            com.google.protobuf.ByteString.copyFromUtf8(
+                (java.lang.String) ref);
+        autoParititonSeqName_ = b;
+        return b;
+      } else {
+        return (com.google.protobuf.ByteString) ref;
+      }
+    }
+
     private void initFields() {
       schemaNameBytes_ = com.google.protobuf.ByteString.EMPTY;
       tableNameBytes_ = com.google.protobuf.ByteString.EMPTY;
@@ -3917,6 +4284,11 @@ public final class PTableProtos {
       storeNulls_ = false;
       baseColumnCount_ = 0;
       rowKeyOrderOptimizable_ = false;
+      transactional_ = false;
+      updateCacheFrequency_ = 0L;
+      indexDisableTimestamp_ = 0L;
+      isNamespaceMapped_ = false;
+      autoParititonSeqName_ = "";
     }
     private byte memoizedIsInitialized = -1;
     public final boolean isInitialized() {
@@ -4062,6 +4434,21 @@ public final class PTableProtos {
       if (((bitField0_ & 0x00200000) == 0x00200000)) {
         output.writeBool(26, rowKeyOrderOptimizable_);
       }
+      if (((bitField0_ & 0x00400000) == 0x00400000)) {
+        output.writeBool(27, transactional_);
+      }
+      if (((bitField0_ & 0x00800000) == 0x00800000)) {
+        output.writeInt64(28, updateCacheFrequency_);
+      }
+      if (((bitField0_ & 0x01000000) == 0x01000000)) {
+        output.writeInt64(29, indexDisableTimestamp_);
+      }
+      if (((bitField0_ & 0x02000000) == 0x02000000)) {
+        output.writeBool(30, isNamespaceMapped_);
+      }
+      if (((bitField0_ & 0x04000000) == 0x04000000)) {
+        output.writeBytes(31, getAutoParititonSeqNameBytes());
+      }
       getUnknownFields().writeTo(output);
     }
 
@@ -4179,6 +4566,26 @@ public final class PTableProtos {
       if (((bitField0_ & 0x00200000) == 0x00200000)) {
         size += com.google.protobuf.CodedOutputStream
           .computeBoolSize(26, rowKeyOrderOptimizable_);
+      }
+      if (((bitField0_ & 0x00400000) == 0x00400000)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeBoolSize(27, transactional_);
+      }
+      if (((bitField0_ & 0x00800000) == 0x00800000)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeInt64Size(28, updateCacheFrequency_);
+      }
+      if (((bitField0_ & 0x01000000) == 0x01000000)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeInt64Size(29, indexDisableTimestamp_);
+      }
+      if (((bitField0_ & 0x02000000) == 0x02000000)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeBoolSize(30, isNamespaceMapped_);
+      }
+      if (((bitField0_ & 0x04000000) == 0x04000000)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeBytesSize(31, getAutoParititonSeqNameBytes());
       }
       size += getUnknownFields().getSerializedSize();
       memoizedSerializedSize = size;
@@ -4321,6 +4728,31 @@ public final class PTableProtos {
         result = result && (getRowKeyOrderOptimizable()
             == other.getRowKeyOrderOptimizable());
       }
+      result = result && (hasTransactional() == other.hasTransactional());
+      if (hasTransactional()) {
+        result = result && (getTransactional()
+            == other.getTransactional());
+      }
+      result = result && (hasUpdateCacheFrequency() == other.hasUpdateCacheFrequency());
+      if (hasUpdateCacheFrequency()) {
+        result = result && (getUpdateCacheFrequency()
+            == other.getUpdateCacheFrequency());
+      }
+      result = result && (hasIndexDisableTimestamp() == other.hasIndexDisableTimestamp());
+      if (hasIndexDisableTimestamp()) {
+        result = result && (getIndexDisableTimestamp()
+            == other.getIndexDisableTimestamp());
+      }
+      result = result && (hasIsNamespaceMapped() == other.hasIsNamespaceMapped());
+      if (hasIsNamespaceMapped()) {
+        result = result && (getIsNamespaceMapped()
+            == other.getIsNamespaceMapped());
+      }
+      result = result && (hasAutoParititonSeqName() == other.hasAutoParititonSeqName());
+      if (hasAutoParititonSeqName()) {
+        result = result && getAutoParititonSeqName()
+            .equals(other.getAutoParititonSeqName());
+      }
       result = result &&
           getUnknownFields().equals(other.getUnknownFields());
       return result;
@@ -4437,6 +4869,26 @@ public final class PTableProtos {
       if (hasRowKeyOrderOptimizable()) {
         hash = (37 * hash) + ROWKEYORDEROPTIMIZABLE_FIELD_NUMBER;
         hash = (53 * hash) + hashBoolean(getRowKeyOrderOptimizable());
+      }
+      if (hasTransactional()) {
+        hash = (37 * hash) + TRANSACTIONAL_FIELD_NUMBER;
+        hash = (53 * hash) + hashBoolean(getTransactional());
+      }
+      if (hasUpdateCacheFrequency()) {
+        hash = (37 * hash) + UPDATECACHEFREQUENCY_FIELD_NUMBER;
+        hash = (53 * hash) + hashLong(getUpdateCacheFrequency());
+      }
+      if (hasIndexDisableTimestamp()) {
+        hash = (37 * hash) + INDEXDISABLETIMESTAMP_FIELD_NUMBER;
+        hash = (53 * hash) + hashLong(getIndexDisableTimestamp());
+      }
+      if (hasIsNamespaceMapped()) {
+        hash = (37 * hash) + ISNAMESPACEMAPPED_FIELD_NUMBER;
+        hash = (53 * hash) + hashBoolean(getIsNamespaceMapped());
+      }
+      if (hasAutoParititonSeqName()) {
+        hash = (37 * hash) + AUTOPARITITONSEQNAME_FIELD_NUMBER;
+        hash = (53 * hash) + getAutoParititonSeqName().hashCode();
       }
       hash = (29 * hash) + getUnknownFields().hashCode();
       memoizedHashCode = hash;
@@ -4614,6 +5066,16 @@ public final class PTableProtos {
         bitField0_ = (bitField0_ & ~0x01000000);
         rowKeyOrderOptimizable_ = false;
         bitField0_ = (bitField0_ & ~0x02000000);
+        transactional_ = false;
+        bitField0_ = (bitField0_ & ~0x04000000);
+        updateCacheFrequency_ = 0L;
+        bitField0_ = (bitField0_ & ~0x08000000);
+        indexDisableTimestamp_ = 0L;
+        bitField0_ = (bitField0_ & ~0x10000000);
+        isNamespaceMapped_ = false;
+        bitField0_ = (bitField0_ & ~0x20000000);
+        autoParititonSeqName_ = "";
+        bitField0_ = (bitField0_ & ~0x40000000);
         return this;
       }
 
@@ -4762,6 +5224,26 @@ public final class PTableProtos {
           to_bitField0_ |= 0x00200000;
         }
         result.rowKeyOrderOptimizable_ = rowKeyOrderOptimizable_;
+        if (((from_bitField0_ & 0x04000000) == 0x04000000)) {
+          to_bitField0_ |= 0x00400000;
+        }
+        result.transactional_ = transactional_;
+        if (((from_bitField0_ & 0x08000000) == 0x08000000)) {
+          to_bitField0_ |= 0x00800000;
+        }
+        result.updateCacheFrequency_ = updateCacheFrequency_;
+        if (((from_bitField0_ & 0x10000000) == 0x10000000)) {
+          to_bitField0_ |= 0x01000000;
+        }
+        result.indexDisableTimestamp_ = indexDisableTimestamp_;
+        if (((from_bitField0_ & 0x20000000) == 0x20000000)) {
+          to_bitField0_ |= 0x02000000;
+        }
+        result.isNamespaceMapped_ = isNamespaceMapped_;
+        if (((from_bitField0_ & 0x40000000) == 0x40000000)) {
+          to_bitField0_ |= 0x04000000;
+        }
+        result.autoParititonSeqName_ = autoParititonSeqName_;
         result.bitField0_ = to_bitField0_;
         onBuilt();
         return result;
@@ -4933,6 +5415,23 @@ public final class PTableProtos {
         }
         if (other.hasRowKeyOrderOptimizable()) {
           setRowKeyOrderOptimizable(other.getRowKeyOrderOptimizable());
+        }
+        if (other.hasTransactional()) {
+          setTransactional(other.getTransactional());
+        }
+        if (other.hasUpdateCacheFrequency()) {
+          setUpdateCacheFrequency(other.getUpdateCacheFrequency());
+        }
+        if (other.hasIndexDisableTimestamp()) {
+          setIndexDisableTimestamp(other.getIndexDisableTimestamp());
+        }
+        if (other.hasIsNamespaceMapped()) {
+          setIsNamespaceMapped(other.getIsNamespaceMapped());
+        }
+        if (other.hasAutoParititonSeqName()) {
+          bitField0_ |= 0x40000000;
+          autoParititonSeqName_ = other.autoParititonSeqName_;
+          onChanged();
         }
         this.mergeUnknownFields(other.getUnknownFields());
         return this;
@@ -6604,6 +7103,212 @@ public final class PTableProtos {
         return this;
       }
 
+      // optional bool transactional = 27;
+      private boolean transactional_ ;
+      /**
+       * <code>optional bool transactional = 27;</code>
+       */
+      public boolean hasTransactional() {
+        return ((bitField0_ & 0x04000000) == 0x04000000);
+      }
+      /**
+       * <code>optional bool transactional = 27;</code>
+       */
+      public boolean getTransactional() {
+        return transactional_;
+      }
+      /**
+       * <code>optional bool transactional = 27;</code>
+       */
+      public Builder setTransactional(boolean value) {
+        bitField0_ |= 0x04000000;
+        transactional_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional bool transactional = 27;</code>
+       */
+      public Builder clearTransactional() {
+        bitField0_ = (bitField0_ & ~0x04000000);
+        transactional_ = false;
+        onChanged();
+        return this;
+      }
+
+      // optional int64 updateCacheFrequency = 28;
+      private long updateCacheFrequency_ ;
+      /**
+       * <code>optional int64 updateCacheFrequency = 28;</code>
+       */
+      public boolean hasUpdateCacheFrequency() {
+        return ((bitField0_ & 0x08000000) == 0x08000000);
+      }
+      /**
+       * <code>optional int64 updateCacheFrequency = 28;</code>
+       */
+      public long getUpdateCacheFrequency() {
+        return updateCacheFrequency_;
+      }
+      /**
+       * <code>optional int64 updateCacheFrequency = 28;</code>
+       */
+      public Builder setUpdateCacheFrequency(long value) {
+        bitField0_ |= 0x08000000;
+        updateCacheFrequency_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional int64 updateCacheFrequency = 28;</code>
+       */
+      public Builder clearUpdateCacheFrequency() {
+        bitField0_ = (bitField0_ & ~0x08000000);
+        updateCacheFrequency_ = 0L;
+        onChanged();
+        return this;
+      }
+
+      // optional int64 indexDisableTimestamp = 29;
+      private long indexDisableTimestamp_ ;
+      /**
+       * <code>optional int64 indexDisableTimestamp = 29;</code>
+       */
+      public boolean hasIndexDisableTimestamp() {
+        return ((bitField0_ & 0x10000000) == 0x10000000);
+      }
+      /**
+       * <code>optional int64 indexDisableTimestamp = 29;</code>
+       */
+      public long getIndexDisableTimestamp() {
+        return indexDisableTimestamp_;
+      }
+      /**
+       * <code>optional int64 indexDisableTimestamp = 29;</code>
+       */
+      public Builder setIndexDisableTimestamp(long value) {
+        bitField0_ |= 0x10000000;
+        indexDisableTimestamp_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional int64 indexDisableTimestamp = 29;</code>
+       */
+      public Builder clearIndexDisableTimestamp() {
+        bitField0_ = (bitField0_ & ~0x10000000);
+        indexDisableTimestamp_ = 0L;
+        onChanged();
+        return this;
+      }
+
+      // optional bool isNamespaceMapped = 30;
+      private boolean isNamespaceMapped_ ;
+      /**
+       * <code>optional bool isNamespaceMapped = 30;</code>
+       */
+      public boolean hasIsNamespaceMapped() {
+        return ((bitField0_ & 0x20000000) == 0x20000000);
+      }
+      /**
+       * <code>optional bool isNamespaceMapped = 30;</code>
+       */
+      public boolean getIsNamespaceMapped() {
+        return isNamespaceMapped_;
+      }
+      /**
+       * <code>optional bool isNamespaceMapped = 30;</code>
+       */
+      public Builder setIsNamespaceMapped(boolean value) {
+        bitField0_ |= 0x20000000;
+        isNamespaceMapped_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional bool isNamespaceMapped = 30;</code>
+       */
+      public Builder clearIsNamespaceMapped() {
+        bitField0_ = (bitField0_ & ~0x20000000);
+        isNamespaceMapped_ = false;
+        onChanged();
+        return this;
+      }
+
+      // optional string autoParititonSeqName = 31;
+      private java.lang.Object autoParititonSeqName_ = "";
+      /**
+       * <code>optional string autoParititonSeqName = 31;</code>
+       */
+      public boolean hasAutoParititonSeqName() {
+        return ((bitField0_ & 0x40000000) == 0x40000000);
+      }
+      /**
+       * <code>optional string autoParititonSeqName = 31;</code>
+       */
+      public java.lang.String getAutoParititonSeqName() {
+        java.lang.Object ref = autoParititonSeqName_;
+        if (!(ref instanceof java.lang.String)) {
+          java.lang.String s = ((com.google.protobuf.ByteString) ref)
+              .toStringUtf8();
+          autoParititonSeqName_ = s;
+          return s;
+        } else {
+          return (java.lang.String) ref;
+        }
+      }
+      /**
+       * <code>optional string autoParititonSeqName = 31;</code>
+       */
+      public com.google.protobuf.ByteString
+          getAutoParititonSeqNameBytes() {
+        java.lang.Object ref = autoParititonSeqName_;
+        if (ref instanceof String) {
+          com.google.protobuf.ByteString b = 
+              com.google.protobuf.ByteString.copyFromUtf8(
+                  (java.lang.String) ref);
+          autoParititonSeqName_ = b;
+          return b;
+        } else {
+          return (com.google.protobuf.ByteString) ref;
+        }
+      }
+      /**
+       * <code>optional string autoParititonSeqName = 31;</code>
+       */
+      public Builder setAutoParititonSeqName(
+          java.lang.String value) {
+        if (value == null) {
+    throw new NullPointerException();
+  }
+  bitField0_ |= 0x40000000;
+        autoParititonSeqName_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional string autoParititonSeqName = 31;</code>
+       */
+      public Builder clearAutoParititonSeqName() {
+        bitField0_ = (bitField0_ & ~0x40000000);
+        autoParititonSeqName_ = getDefaultInstance().getAutoParititonSeqName();
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional string autoParititonSeqName = 31;</code>
+       */
+      public Builder setAutoParititonSeqNameBytes(
+          com.google.protobuf.ByteString value) {
+        if (value == null) {
+    throw new NullPointerException();
+  }
+  bitField0_ |= 0x40000000;
+        autoParititonSeqName_ = value;
+        onChanged();
+        return this;
+      }
+
       // @@protoc_insertion_point(builder_scope:PTable)
     }
 
@@ -6639,37 +7344,41 @@ public final class PTableProtos {
       descriptor;
   static {
     java.lang.String[] descriptorData = {
-      "\n\014PTable.proto\032\021PGuidePosts.proto\"\373\001\n\007PC" +
+      "\n\014PTable.proto\032\021PGuidePosts.proto\"\246\002\n\007PC" +
       "olumn\022\027\n\017columnNameBytes\030\001 \002(\014\022\027\n\017family" +
       "NameBytes\030\002 \001(\014\022\020\n\010dataType\030\003 \002(\t\022\021\n\tmax" +
       "Length\030\004 \001(\005\022\r\n\005scale\030\005 \001(\005\022\020\n\010nullable\030" +
       "\006 \002(\010\022\020\n\010position\030\007 \002(\005\022\021\n\tsortOrder\030\010 \002" +
       "(\005\022\021\n\tarraySize\030\t \001(\005\022\024\n\014viewConstant\030\n " +
       "\001(\014\022\026\n\016viewReferenced\030\013 \001(\010\022\022\n\nexpressio" +
-      "n\030\014 \001(\t\"\232\001\n\013PTableStats\022\013\n\003key\030\001 \002(\014\022\016\n\006" +
-      "values\030\002 \003(\014\022\033\n\023guidePostsByteCount\030\003 \001(" +
-      "\003\022\025\n\rkeyBytesCount\030\004 \001(\003\022\027\n\017guidePostsCo",
-      "unt\030\005 \001(\005\022!\n\013pGuidePosts\030\006 \001(\0132\014.PGuideP" +
-      "osts\"\357\004\n\006PTable\022\027\n\017schemaNameBytes\030\001 \002(\014" +
-      "\022\026\n\016tableNameBytes\030\002 \002(\014\022\036\n\ttableType\030\003 " +
-      "\002(\0162\013.PTableType\022\022\n\nindexState\030\004 \001(\t\022\026\n\016" +
-      "sequenceNumber\030\005 \002(\003\022\021\n\ttimeStamp\030\006 \002(\003\022" +
-      "\023\n\013pkNameBytes\030\007 \001(\014\022\021\n\tbucketNum\030\010 \002(\005\022" +
-      "\031\n\007columns\030\t \003(\0132\010.PColumn\022\030\n\007indexes\030\n " +
-      "\003(\0132\007.PTable\022\027\n\017isImmutableRows\030\013 \002(\010\022 \n" +
-      "\nguidePosts\030\014 \003(\0132\014.PTableStats\022\032\n\022dataT" +
-      "ableNameBytes\030\r \001(\014\022\031\n\021defaultFamilyName",
-      "\030\016 \001(\014\022\022\n\ndisableWAL\030\017 \002(\010\022\023\n\013multiTenan" +
-      "t\030\020 \002(\010\022\020\n\010viewType\030\021 \001(\014\022\025\n\rviewStateme" +
-      "nt\030\022 \001(\014\022\025\n\rphysicalNames\030\023 \003(\014\022\020\n\010tenan" +
-      "tId\030\024 \001(\014\022\023\n\013viewIndexId\030\025 \001(\005\022\021\n\tindexT" +
-      "ype\030\026 \001(\014\022\026\n\016statsTimeStamp\030\027 \001(\003\022\022\n\nsto" +
-      "reNulls\030\030 \001(\010\022\027\n\017baseColumnCount\030\031 \001(\005\022\036" +
-      "\n\026rowKeyOrderOptimizable\030\032 \001(\010*A\n\nPTable" +
-      "Type\022\n\n\006SYSTEM\020\000\022\010\n\004USER\020\001\022\010\n\004VIEW\020\002\022\t\n\005" +
-      "INDEX\020\003\022\010\n\004JOIN\020\004B@\n(org.apache.phoenix." +
-      "coprocessor.generatedB\014PTableProtosH\001\210\001\001",
-      "\240\001\001"
+      "n\030\014 \001(\t\022\026\n\016isRowTimestamp\030\r \001(\010\022\021\n\tisDyn" +
+      "amic\030\016 \001(\010\"\232\001\n\013PTableStats\022\013\n\003key\030\001 \002(\014\022" +
+      "\016\n\006values\030\002 \003(\014\022\033\n\023guidePostsByteCount\030\003",
+      " \001(\003\022\025\n\rkeyBytesCount\030\004 \001(\003\022\027\n\017guidePost" +
+      "sCount\030\005 \001(\005\022!\n\013pGuidePosts\030\006 \001(\0132\014.PGui" +
+      "dePosts\"\374\005\n\006PTable\022\027\n\017schemaNameBytes\030\001 " +
+      "\002(\014\022\026\n\016tableNameBytes\030\002 \002(\014\022\036\n\ttableType" +
+      "\030\003 \002(\0162\013.PTableType\022\022\n\nindexState\030\004 \001(\t\022" +
+      "\026\n\016sequenceNumber\030\005 \002(\003\022\021\n\ttimeStamp\030\006 \002" +
+      "(\003\022\023\n\013pkNameBytes\030\007 \001(\014\022\021\n\tbucketNum\030\010 \002" +
+      "(\005\022\031\n\007columns\030\t \003(\0132\010.PColumn\022\030\n\007indexes" +
+      "\030\n \003(\0132\007.PTable\022\027\n\017isImmutableRows\030\013 \002(\010" +
+      "\022 \n\nguidePosts\030\014 \003(\0132\014.PTableStats\022\032\n\022da",
+      "taTableNameBytes\030\r \001(\014\022\031\n\021defaultFamilyN" +
+      "ame\030\016 \001(\014\022\022\n\ndisableWAL\030\017 \002(\010\022\023\n\013multiTe" +
+      "nant\030\020 \002(\010\022\020\n\010viewType\030\021 \001(\014\022\025\n\rviewStat" +
+      "ement\030\022 \001(\014\022\025\n\rphysicalNames\030\023 \003(\014\022\020\n\010te" +
+      "nantId\030\024 \001(\014\022\023\n\013viewIndexId\030\025 \001(\005\022\021\n\tind" +
+      "exType\030\026 \001(\014\022\026\n\016statsTimeStamp\030\027 \001(\003\022\022\n\n" +
+      "storeNulls\030\030 \001(\010\022\027\n\017baseColumnCount\030\031 \001(" +
+      "\005\022\036\n\026rowKeyOrderOptimizable\030\032 \001(\010\022\025\n\rtra" +
+      "nsactional\030\033 \001(\010\022\034\n\024updateCacheFrequency" +
+      "\030\034 \001(\003\022\035\n\025indexDisableTimestamp\030\035 \001(\003\022\031\n",
+      "\021isNamespaceMapped\030\036 \001(\010\022\034\n\024autoParitito" +
+      "nSeqName\030\037 \001(\t*A\n\nPTableType\022\n\n\006SYSTEM\020\000" +
+      "\022\010\n\004USER\020\001\022\010\n\004VIEW\020\002\022\t\n\005INDEX\020\003\022\010\n\004JOIN\020" +
+      "\004B@\n(org.apache.phoenix.coprocessor.gene" +
+      "ratedB\014PTableProtosH\001\210\001\001\240\001\001"
     };
     com.google.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner assigner =
       new com.google.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner() {
@@ -6681,7 +7390,7 @@ public final class PTableProtos {
           internal_static_PColumn_fieldAccessorTable = new
             com.google.protobuf.GeneratedMessage.FieldAccessorTable(
               internal_static_PColumn_descriptor,
-              new java.lang.String[] { "ColumnNameBytes", "FamilyNameBytes", "DataType", "MaxLength", "Scale", "Nullable", "Position", "SortOrder", "ArraySize", "ViewConstant", "ViewReferenced", "Expression", });
+              new java.lang.String[] { "ColumnNameBytes", "FamilyNameBytes", "DataType", "MaxLength", "Scale", "Nullable", "Position", "SortOrder", "ArraySize", "ViewConstant", "ViewReferenced", "Expression", "IsRowTimestamp", "IsDynamic", });
           internal_static_PTableStats_descriptor =
             getDescriptor().getMessageTypes().get(1);
           internal_static_PTableStats_fieldAccessorTable = new
@@ -6693,7 +7402,7 @@ public final class PTableProtos {
           internal_static_PTable_fieldAccessorTable = new
             com.google.protobuf.GeneratedMessage.FieldAccessorTable(
               internal_static_PTable_descriptor,
-              new java.lang.String[] { "SchemaNameBytes", "TableNameBytes", "TableType", "IndexState", "SequenceNumber", "TimeStamp", "PkNameBytes", "BucketNum", "Columns", "Indexes", "IsImmutableRows", "GuidePosts", "DataTableNameBytes", "DefaultFamilyName", "DisableWAL", "MultiTenant", "ViewType", "ViewStatement", "PhysicalNames", "TenantId", "ViewIndexId", "IndexType", "StatsTimeStamp", "StoreNulls", "BaseColumnCount", "RowKeyOrderOptimizable", });
+              new java.lang.String[] { "SchemaNameBytes", "TableNameBytes", "TableType", "IndexState", "SequenceNumber", "TimeStamp", "PkNameBytes", "BucketNum", "Columns", "Indexes", "IsImmutableRows", "GuidePosts", "DataTableNameBytes", "DefaultFamilyName", "DisableWAL", "MultiTenant", "ViewType", "ViewStatement", "PhysicalNames", "TenantId", "ViewIndexId", "IndexType", "StatsTimeStamp", "StoreNulls", "BaseColumnCount", "RowKeyOrderOptimizable", "Transactional", "UpdateCacheFrequency", "IndexDisableTimestamp", "IsNamespaceMapped", "AutoParititonSeqName", });
           return null;
         }
       };

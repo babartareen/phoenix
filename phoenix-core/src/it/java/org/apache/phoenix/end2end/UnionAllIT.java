@@ -40,7 +40,6 @@ import org.apache.phoenix.util.ReadOnlyProps;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-
 public class UnionAllIT extends BaseOwnClusterHBaseManagedTimeIT {
 
     @BeforeClass
@@ -645,4 +644,86 @@ public class UnionAllIT extends BaseOwnClusterHBaseManagedTimeIT {
             conn.close();
         }
     } 
+
+    @Test
+    public void testBug2295() throws Exception {
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+        conn.setAutoCommit(false);
+
+        try {
+            String ddl = "CREATE TABLE table1(" +
+                    "id BIGINT, col1 VARCHAR, col2 integer, CONSTRAINT pk PRIMARY KEY (id)) IMMUTABLE_ROWS=true";
+            createTestTable(getUrl(), ddl);
+
+            ddl = "CREATE TABLE table2(" +
+                    "id BIGINT, col1 VARCHAR, col2 integer, CONSTRAINT pk PRIMARY KEY (id)) IMMUTABLE_ROWS=true";
+            createTestTable(getUrl(), ddl);
+
+            ddl = "CREATE index idx_table1_col1 on table1(col1)";
+            createTestTable(getUrl(), ddl);
+
+            ddl = "CREATE index idx_table2_col1 on table2(col1)";
+            createTestTable(getUrl(), ddl);
+
+            ddl = "Explain SELECT /*+ INDEX(table1 idx_table1_col1) */ col1, col2 from table1 where col1='123' " +
+                    "union all SELECT /*+ INDEX(table2 idx_table2_col1) */ col1, col2 from table2 where col1='123'"; 
+            ResultSet rs = conn.createStatement().executeQuery(ddl);
+            assertTrue(rs.next());
+        } finally {
+            String ddl = "drop table table1";
+            conn.createStatement().execute(ddl);
+            ddl = "drop table table2";
+            conn.createStatement().execute(ddl);
+            conn.close();
+        }
+    }
+
+    @Test
+    public void testParameterMetaDataNotNull() throws Exception {
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+    
+        String ddl = "CREATE TABLE test_table " +
+                "  (a_string varchar not null, col1 integer" +
+                "  CONSTRAINT pk PRIMARY KEY (a_string))\n";
+        createTestTable(getUrl(), ddl);
+        String dml = "UPSERT INTO test_table VALUES(?, ?)";
+        PreparedStatement stmt = conn.prepareStatement(dml);
+        stmt.setString(1, "a");
+        stmt.setInt(2, 10);
+        stmt.execute();
+        conn.commit();
+
+        ddl = "CREATE TABLE b_table " +
+                "  (a_string varchar not null, col1 integer" +
+                "  CONSTRAINT pk PRIMARY KEY (a_string))\n";
+        createTestTable(getUrl(), ddl);
+        dml = "UPSERT INTO b_table VALUES(?, ?)";
+        stmt = conn.prepareStatement(dml);
+        stmt.setString(1, "b");
+        stmt.setInt(2, 20);
+        stmt.execute();
+        conn.commit();
+
+        String query = "select * from test_table union all select * from b_table";
+
+        try{
+            PreparedStatement pstmt = conn.prepareStatement(query);
+            assertTrue(pstmt.getParameterMetaData() != null);
+            ResultSet rs = pstmt.executeQuery();
+            assertTrue(rs.next());
+            assertEquals("a",rs.getString(1));
+            assertEquals(10,rs.getInt(2));
+            assertTrue(rs.next());
+            assertEquals("b",rs.getString(1));
+            assertEquals(20,rs.getInt(2));
+            assertFalse(rs.next()); 
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        } finally {
+            conn.close();
+        }
+    } 
+
 }

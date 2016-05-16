@@ -36,6 +36,7 @@ import org.apache.phoenix.execute.MutationState;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.parse.PFunction;
+import org.apache.phoenix.parse.PSchema;
 import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PMetaData;
 import org.apache.phoenix.schema.PName;
@@ -45,6 +46,8 @@ import org.apache.phoenix.schema.Sequence;
 import org.apache.phoenix.schema.SequenceAllocation;
 import org.apache.phoenix.schema.SequenceKey;
 import org.apache.phoenix.schema.stats.PTableStats;
+
+import co.cask.tephra.TransactionSystemClient;
 
 
 public class DelegateConnectionQueryServices extends DelegateQueryServices implements ConnectionQueryServices {
@@ -74,14 +77,23 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
     }
 
     @Override
-    public PMetaData addTable(PTable table) throws SQLException {
-        return getDelegate().addTable(table);
+    public PMetaData addTable(PTable table, long resolvedTime) throws SQLException {
+        return getDelegate().addTable(table, resolvedTime);
+    }
+    
+    @Override
+    public PMetaData updateResolvedTimestamp(PTable table, long resolvedTimestamp) throws SQLException {
+        return getDelegate().updateResolvedTimestamp(table, resolvedTimestamp);
     }
 
     @Override
     public PMetaData addColumn(PName tenantId, String tableName, List<PColumn> columns, long tableTimeStamp,
-            long tableSeqNum, boolean isImmutableRows, boolean isWalDisabled, boolean isMultitenant, boolean storeNulls) throws SQLException {
-        return getDelegate().addColumn(tenantId, tableName, columns, tableTimeStamp, tableSeqNum, isImmutableRows, isWalDisabled, isMultitenant, storeNulls);
+            long tableSeqNum, boolean isImmutableRows, boolean isWalDisabled, boolean isMultitenant, boolean storeNulls,
+            boolean isTransactional, long updateCacheFrequency, boolean isNamespaceMapped, long resolvedTime)
+                    throws SQLException {
+        return getDelegate().addColumn(tenantId, tableName, columns, tableTimeStamp, tableSeqNum, isImmutableRows,
+                isWalDisabled, isMultitenant, storeNulls, isTransactional, updateCacheFrequency, isNamespaceMapped,
+                resolvedTime);
     }
 
     @Override
@@ -92,8 +104,8 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
 
     @Override
     public PMetaData removeColumn(PName tenantId, String tableName, List<PColumn> columnsToRemove, long tableTimeStamp,
-            long tableSeqNum) throws SQLException {
-        return getDelegate().removeColumn(tenantId, tableName, columnsToRemove, tableTimeStamp, tableSeqNum);
+            long tableSeqNum, long resolvedTime) throws SQLException {
+        return getDelegate().removeColumn(tenantId, tableName, columnsToRemove, tableTimeStamp, tableSeqNum, resolvedTime);
     }
 
     @Override
@@ -107,10 +119,11 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
     }
 
     @Override
-    public MetaDataMutationResult createTable(List<Mutation> tableMetaData, byte[] physicalName,
-            PTableType tableType, Map<String, Object> tableProps, List<Pair<byte[], Map<String, Object>>> families, byte[][] splits)
-            throws SQLException {
-        return getDelegate().createTable(tableMetaData, physicalName, tableType, tableProps, families, splits);
+    public MetaDataMutationResult createTable(List<Mutation> tableMetaData, byte[] physicalName, PTableType tableType,
+            Map<String, Object> tableProps, List<Pair<byte[], Map<String, Object>>> families, byte[][] splits,
+            boolean isNamespaceMapped) throws SQLException {
+        return getDelegate().createTable(tableMetaData, physicalName, tableType, tableProps, families, splits,
+                isNamespaceMapped);
     }
 
     @Override
@@ -165,8 +178,8 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
     }
 
     @Override
-    public boolean hasInvalidIndexConfiguration() {
-        return getDelegate().hasInvalidIndexConfiguration();
+    public boolean hasIndexWALCodec() {
+        return getDelegate().hasIndexWALCodec();
     }
 
     @Override
@@ -244,13 +257,18 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
 
 
     @Override
-    public void clearCache() throws SQLException {
-        getDelegate().clearCache();
+    public long clearCache() throws SQLException {
+        return getDelegate().clearCache();
     }
 
     @Override
     public int getSequenceSaltBuckets() {
         return getDelegate().getSequenceSaltBuckets();
+    }
+
+    @Override
+    public TransactionSystemClient getTransactionSystemClient() {
+        return getDelegate().getTransactionSystemClient();
     }
 
     @Override
@@ -281,5 +299,46 @@ public class DelegateConnectionQueryServices extends DelegateQueryServices imple
     public MetaDataMutationResult dropFunction(List<Mutation> tableMetadata, boolean ifExists)
             throws SQLException {
         return getDelegate().dropFunction(tableMetadata, ifExists);
+    }
+
+    @Override
+    public long getRenewLeaseThresholdMilliSeconds() {
+        return getDelegate().getRenewLeaseThresholdMilliSeconds();
+    }
+
+    @Override
+    public boolean isRenewingLeasesEnabled() {
+        return getDelegate().isRenewingLeasesEnabled();
+    }
+
+    @Override
+    public HRegionLocation getTableRegionLocation(byte[] tableName, byte[] row)
+            throws SQLException {
+        return getDelegate().getTableRegionLocation(tableName, row);
+    }
+
+    @Override
+    public PMetaData addSchema(PSchema schema) throws SQLException {
+        return getDelegate().addSchema(schema);
+    }
+
+    @Override
+    public MetaDataMutationResult createSchema(List<Mutation> schemaMutations, String schemaName) throws SQLException {
+        return getDelegate().createSchema(schemaMutations, schemaName);
+    }
+
+    @Override
+    public MetaDataMutationResult getSchema(String schemaName, long clientTimestamp) throws SQLException {
+        return getDelegate().getSchema(schemaName, clientTimestamp);
+    }
+
+    @Override
+    public PMetaData removeSchema(PSchema schema, long schemaTimeStamp) {
+        return getDelegate().removeSchema(schema, schemaTimeStamp);
+    }
+
+    @Override
+    public MetaDataMutationResult dropSchema(List<Mutation> schemaMetaData, String schemaName) throws SQLException {
+        return getDelegate().dropSchema(schemaMetaData, schemaName);
     }
 }

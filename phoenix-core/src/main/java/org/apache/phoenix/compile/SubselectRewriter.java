@@ -30,6 +30,7 @@ import org.apache.phoenix.parse.ColumnParseNode;
 import org.apache.phoenix.parse.DerivedTableNode;
 import org.apache.phoenix.parse.HintNode;
 import org.apache.phoenix.parse.LimitNode;
+import org.apache.phoenix.parse.OffsetNode;
 import org.apache.phoenix.parse.OrderByNode;
 import org.apache.phoenix.parse.ParseNode;
 import org.apache.phoenix.parse.ParseNodeRewriter;
@@ -44,6 +45,7 @@ import com.google.common.collect.Lists;
 public class SubselectRewriter extends ParseNodeRewriter {
     private final String tableAlias;
     private final Map<String, ParseNode> aliasMap;
+    private boolean removeAlias = false;
     
     public static SelectStatement applyPostFilters(SelectStatement statement, List<ParseNode> postFilters, String subqueryAlias) throws SQLException {
         if (postFilters.isEmpty())
@@ -110,6 +112,7 @@ public class SubselectRewriter extends ParseNodeRewriter {
         ParseNode havingRewrite = subselect.getHaving();
         List<OrderByNode> orderByRewrite = subselect.getOrderBy();
         LimitNode limitRewrite = subselect.getLimit();
+        OffsetNode offsetRewrite = subselect.getOffset();
         HintNode hintRewrite = subselect.getHint();
         boolean isDistinctRewrite = subselect.isDistinct();
         boolean isAggregateRewrite = subselect.isAggregate();
@@ -127,6 +130,22 @@ public class SubselectRewriter extends ParseNodeRewriter {
             }
         }
         
+        if (select.isDistinct()) {
+            if (subselect.getLimit() != null || subselect.isAggregate() || subselect.isDistinct()) {
+                return select;
+            }
+            isDistinctRewrite = true;
+            orderByRewrite = null;
+        }
+        
+        if (select.isAggregate()) {
+            if (subselect.getLimit() != null || subselect.isAggregate() || subselect.isDistinct()) {
+                return select;
+            }
+            isAggregateRewrite = true;
+            orderByRewrite = null;
+        }
+        
         List<ParseNode> groupBy = select.getGroupBy();
         if (!groupBy.isEmpty()) {
             if (subselect.getLimit() != null || subselect.isAggregate() || subselect.isDistinct()) {
@@ -139,6 +158,7 @@ public class SubselectRewriter extends ParseNodeRewriter {
             if (select.getHaving() != null) {
                 havingRewrite = select.getHaving().accept(this);
             }
+            orderByRewrite = null;
         }
         
         List<AliasedNode> selectNodes = select.getSelect();
@@ -170,6 +190,13 @@ public class SubselectRewriter extends ParseNodeRewriter {
             }
         }
         
+        OffsetNode offset = select.getOffset();
+        if (offsetRewrite != null || (limitRewrite != null && offset != null)) {
+            return select;
+        } else {
+            offsetRewrite = offset;
+        }
+        
         LimitNode limit = select.getLimit();
         if (limit != null) {
             if (limitRewrite == null) {
@@ -184,28 +211,21 @@ public class SubselectRewriter extends ParseNodeRewriter {
                 }
             }
         }
-        
+
         HintNode hint = select.getHint();
         if (hint != null) {
             hintRewrite = hintRewrite == null ? hint : HintNode.combine(hint, hintRewrite);
         }
         
-        if (select.isDistinct()) {
-            if (subselect.getLimit() != null || subselect.isAggregate() || subselect.isDistinct()) {
-                return select;
-            }
-            isDistinctRewrite = true;
+        SelectStatement stmt = NODE_FACTORY.select(subselect.getFrom(), hintRewrite, isDistinctRewrite,
+                selectNodesRewrite, whereRewrite, groupByRewrite, havingRewrite, orderByRewrite, limitRewrite,
+                offsetRewrite, select.getBindCount(), isAggregateRewrite, select.hasSequence(), select.getSelects(),
+                select.getUdfParseNodes());
+        if (tableAlias != null) {
+            this.removeAlias = true;
+            stmt = ParseNodeRewriter.rewrite(stmt, this);
         }
-        
-        if (select.isAggregate()) {
-            if (subselect.getLimit() != null || subselect.isAggregate() || subselect.isDistinct()) {
-                return select;
-            }
-            isAggregateRewrite = true;
-        }
-        
-        return NODE_FACTORY.select(subselect.getFrom(), hintRewrite, isDistinctRewrite, selectNodesRewrite, whereRewrite, groupByRewrite, 
-            havingRewrite, orderByRewrite, limitRewrite, select.getBindCount(), isAggregateRewrite, select.hasSequence(), select.getSelects(), select.getUdfParseNodes());
+        return stmt;
     }
     
     private SelectStatement applyPostFilters(SelectStatement statement, List<ParseNode> postFilters) throws SQLException {
@@ -243,6 +263,13 @@ public class SubselectRewriter extends ParseNodeRewriter {
     public ParseNode visit(ColumnParseNode node) throws SQLException {
         if (node.getTableName() == null)
             return super.visit(node);
+        
+        if (removeAlias) {
+            if (node.getTableName().equals(tableAlias)) {
+                return NODE_FACTORY.column(null, node.getName(), node.getAlias());
+            }
+            return super.visit(node);
+        }
         
         ParseNode aliasedNode = aliasMap.get(node.getFullName());
         if (aliasedNode != null) {

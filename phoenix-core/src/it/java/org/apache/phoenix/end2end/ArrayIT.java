@@ -870,6 +870,33 @@ public class ArrayIT extends BaseClientManagedTimeIT {
     }
 
     @Test
+    public void testArrayWithVarCharArray() throws Exception {
+        Connection conn;
+        PreparedStatement stmt;
+        ResultSet rs;
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        conn = DriverManager.getConnection(getUrl(), props);
+        conn.createStatement().execute("CREATE TABLE t ( k VARCHAR PRIMARY KEY, a VARCHAR ARRAY[])");
+        conn.close();
+
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
+        stmt = conn.prepareStatement("UPSERT INTO t VALUES('a',ARRAY['a',null])");
+        int res = stmt.executeUpdate();
+        assertEquals(1, res);
+        conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 40));
+        conn = DriverManager.getConnection(getUrl(), props);
+        rs = conn.createStatement().executeQuery("SELECT ARRAY_ELEM(a,2) FROM t");
+        assertTrue(rs.next());
+        assertEquals(null, rs.getString(1));
+        conn.close();
+    }
+
+    @Test
     public void testArraySelectSingleArrayElemWithCast() throws Exception {
         Connection conn;
         PreparedStatement stmt;
@@ -1864,10 +1891,16 @@ public class ArrayIT extends BaseClientManagedTimeIT {
 
     @Test
     public void testArrayConstructorWithMultipleRows1() throws Exception {
-        Connection conn = DriverManager.getConnection(getUrl());
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
         String ddl = "CREATE TABLE regions1 (region_name VARCHAR PRIMARY KEY, a INTEGER, b INTEGER)";
         conn.createStatement().execute(ddl);
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 20));
+        conn = DriverManager.getConnection(getUrl(), props);
         PreparedStatement stmt = conn.prepareStatement("UPSERT INTO regions1(region_name, a, b) VALUES('a', 6,3)");
         stmt.execute();
         stmt = conn.prepareStatement("UPSERT INTO regions1(region_name, a, b) VALUES('b', 2,4)");
@@ -1875,6 +1908,9 @@ public class ArrayIT extends BaseClientManagedTimeIT {
         stmt = conn.prepareStatement("UPSERT INTO regions1(region_name, a, b) VALUES('c', 6,3)");
         stmt.execute();
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
         ResultSet rs;
         rs = conn.createStatement().executeQuery("SELECT COUNT(DISTINCT ARRAY[a,b]) from regions1");
         assertTrue(rs.next());
@@ -1883,10 +1919,16 @@ public class ArrayIT extends BaseClientManagedTimeIT {
 
     @Test
     public void testArrayConstructorWithMultipleRows2() throws Exception {
-        Connection conn = DriverManager.getConnection(getUrl());
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
         String ddl = "CREATE TABLE regions2 (region_name VARCHAR PRIMARY KEY, a INTEGER, b INTEGER)";
         conn.createStatement().execute(ddl);
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 20));
+        conn = DriverManager.getConnection(getUrl(), props);
         PreparedStatement stmt = conn.prepareStatement("UPSERT INTO regions2(region_name, a, b) VALUES('a', 6,3)");
         stmt.execute();
         stmt = conn.prepareStatement("UPSERT INTO regions2(region_name, a, b) VALUES('b', 2,4)");
@@ -1894,6 +1936,9 @@ public class ArrayIT extends BaseClientManagedTimeIT {
         stmt = conn.prepareStatement("UPSERT INTO regions2(region_name, a, b) VALUES('c', 6,3)");
         stmt.execute();
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
         ResultSet rs;
         rs = conn.createStatement().executeQuery("SELECT ARRAY[a,b] from regions2");
         assertTrue(rs.next());
@@ -1910,10 +1955,16 @@ public class ArrayIT extends BaseClientManagedTimeIT {
 
     @Test
     public void testArrayConstructorWithMultipleRows3() throws Exception {
-        Connection conn = DriverManager.getConnection(getUrl());
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
         String ddl = "CREATE TABLE regions3 (region_name VARCHAR PRIMARY KEY, a VARCHAR, b VARCHAR)";
         conn.createStatement().execute(ddl);
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 20));
+        conn = DriverManager.getConnection(getUrl(), props);
         PreparedStatement stmt = conn.prepareStatement("UPSERT INTO regions3(region_name, a, b) VALUES('a', 'foo', 'abc')");
         stmt.execute();
         stmt = conn.prepareStatement("UPSERT INTO regions3(region_name, a, b) VALUES('b', 'abc', 'dfg')");
@@ -1921,6 +1972,9 @@ public class ArrayIT extends BaseClientManagedTimeIT {
         stmt = conn.prepareStatement("UPSERT INTO regions3(region_name, a, b) VALUES('c', 'foo', 'abc')");
         stmt.execute();
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
         ResultSet rs;
         rs = conn.createStatement().executeQuery("SELECT ARRAY[a,b] from regions3");
         assertTrue(rs.next());
@@ -1937,10 +1991,16 @@ public class ArrayIT extends BaseClientManagedTimeIT {
 
     @Test
     public void testArrayConstructorWithMultipleRows4() throws Exception {
-        Connection conn = DriverManager.getConnection(getUrl());
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
         String ddl = "CREATE TABLE regions4 (region_name VARCHAR PRIMARY KEY, a VARCHAR, b VARCHAR)";
         conn.createStatement().execute(ddl);
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 20));
+        conn = DriverManager.getConnection(getUrl(), props);
         PreparedStatement stmt = conn.prepareStatement("UPSERT INTO regions4(region_name, a, b) VALUES('a', 'foo', 'abc')");
         stmt.execute();
         stmt = conn.prepareStatement("UPSERT INTO regions4(region_name, a, b) VALUES('b', 'abc', 'dfg')");
@@ -1948,6 +2008,9 @@ public class ArrayIT extends BaseClientManagedTimeIT {
         stmt = conn.prepareStatement("UPSERT INTO regions4(region_name, a, b) VALUES('c', 'foo', 'abc')");
         stmt.execute();
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
         ResultSet rs;
         rs = conn.createStatement().executeQuery("SELECT COUNT(DISTINCT ARRAY[a,b]) from regions4");
         assertTrue(rs.next());
@@ -1956,10 +2019,16 @@ public class ArrayIT extends BaseClientManagedTimeIT {
 
     @Test
     public void testArrayConstructorWithMultipleRows5() throws Exception {
-        Connection conn = DriverManager.getConnection(getUrl());
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
         String ddl = "CREATE TABLE regions5 (region_name VARCHAR PRIMARY KEY, a VARCHAR, b VARCHAR)";
         conn.createStatement().execute(ddl);
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 20));
+        conn = DriverManager.getConnection(getUrl(), props);
         PreparedStatement stmt = conn.prepareStatement("UPSERT INTO regions5(region_name, a, b) VALUES('a', 'foo', 'abc')");
         stmt.execute();
         stmt = conn.prepareStatement("UPSERT INTO regions5(region_name, a, b) VALUES('b', 'abc', 'dfg')");
@@ -1967,6 +2036,9 @@ public class ArrayIT extends BaseClientManagedTimeIT {
         stmt = conn.prepareStatement("UPSERT INTO regions5(region_name, a, b) VALUES('c', 'foo', 'abc')");
         stmt.execute();
         conn.commit();
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
         ResultSet rs;
         rs = conn.createStatement().executeQuery("SELECT ARRAY_APPEND(ARRAY[a,b], 'oo') from regions5");
         assertTrue(rs.next());
@@ -2678,5 +2750,31 @@ public class ArrayIT extends BaseClientManagedTimeIT {
         assertEquals(1, rs.getInt(3));
         assertEquals(conn.createArrayOf("INTEGER", new Integer[]{5, 6}), rs.getArray(4));
         assertEquals(3, rs.getInt(5));
+    }
+
+    @Test
+    public void testCharPrimaryKey() throws SQLException{
+        long ts = nextTimestamp();
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+        String ddl = "CREATE TABLE TEST5(testCharArray CHAR(3)[], CONSTRAINT test_pk PRIMARY KEY(testCharArray)) DEFAULT_COLUMN_FAMILY='T'";
+        conn.createStatement().execute(ddl);
+        conn.close();
+
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
+        PreparedStatement stmt = conn.prepareStatement("UPSERT INTO TEST5 VALUES (ARRAY['aaa', 'bbb', 'ccc'])");
+        stmt.execute();
+        conn.commit();
+        conn.close();
+
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 40));
+        conn = DriverManager.getConnection(getUrl(), props);
+        ResultSet rs;
+        stmt = conn.prepareStatement("SELECT testCharArray from TEST5");
+        rs = stmt.executeQuery();
+        assertTrue(rs.next());
+        assertEquals(conn.createArrayOf("CHAR", new String[]{"aaa", "bbb", "ccc"}), rs.getArray(1));
     }
 }

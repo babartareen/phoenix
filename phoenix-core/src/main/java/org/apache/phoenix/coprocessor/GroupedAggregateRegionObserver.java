@@ -39,7 +39,6 @@ import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
-import org.apache.hadoop.hbase.HRegionInfo;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
@@ -64,6 +63,7 @@ import org.apache.phoenix.join.HashJoinInfo;
 import org.apache.phoenix.memory.MemoryManager.MemoryChunk;
 import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.schema.SortOrder;
+import org.apache.phoenix.schema.StaleRegionBoundaryCacheException;
 import org.apache.phoenix.schema.tuple.MultiKeyValueTuple;
 import org.apache.phoenix.schema.types.PInteger;
 import org.apache.phoenix.util.Closeables;
@@ -315,13 +315,8 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
                 aggResults.add(keyValue);
             }
             // scanner using the non spillable, memory-only implementation
-            return new BaseRegionScanner() {
+            return new BaseRegionScanner(s) {
                 private int index = 0;
-
-                @Override
-                public HRegionInfo getRegionInfo() {
-                    return s.getRegionInfo();
-                }
 
                 @Override
                 public void close() throws IOException {
@@ -340,16 +335,6 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
                     results.add(aggResults.get(index));
                     index++;
                     return index < aggResults.size();
-                }
-
-                @Override
-                public long getMaxResultSize() {
-                	return s.getMaxResultSize();
-                }
-
-                @Override
-                public int getBatch() {
-                    return s.getBatch();
                 }
             };
         }
@@ -417,8 +402,10 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
             }
 
             Region region = c.getEnvironment().getRegion();
-            region.startRegionOperation();
+            boolean acquiredLock = false;
             try {
+                region.startRegionOperation();
+                acquiredLock = true;
                 synchronized (scanner) {
                     do {
                         List<Cell> results = new ArrayList<Cell>();
@@ -438,8 +425,8 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
                         }
                     } while (hasMore && groupByCache.size() < limit);
                 }
-            } finally {
-                region.closeRegionOperation();
+            }  finally {
+                if (acquiredLock) region.closeRegionOperation();
             }
 
             RegionScanner regionScanner = groupByCache.getScanner(scanner);
@@ -471,19 +458,9 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
             logger.debug(LogUtil.addCustomAnnotations("Grouped aggregation over ordered rows with scan " + scan + ", group by "
                     + expressions + ", aggregators " + aggregators, ScanUtil.getCustomAnnotations(scan)));
         }
-        return new BaseRegionScanner() {
+        return new BaseRegionScanner(scanner) {
             private long rowCount = 0;
             private ImmutableBytesWritable currentKey = null;
-
-            @Override
-            public HRegionInfo getRegionInfo() {
-                return scanner.getRegionInfo();
-            }
-
-            @Override
-            public void close() throws IOException {
-                scanner.close();
-            }
 
             @Override
             public boolean next(List<Cell> results) throws IOException {
@@ -497,8 +474,10 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
                 // start of a new row. Otherwise, we have to wait until an agg
                 int countOffset = rowAggregators.length == 0 ? 1 : 0;
                 Region region = c.getEnvironment().getRegion();
-                region.startRegionOperation();
+                boolean acquiredLock = false;
                 try {
+                    region.startRegionOperation();
+                    acquiredLock = true;
                     synchronized (scanner) {
                         do {
                             List<Cell> kvs = new ArrayList<Cell>();
@@ -530,7 +509,7 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
                         } while (hasMore && !aggBoundary && !atLimit);
                     }
                 } finally {
-                    region.closeRegionOperation();
+                    if (acquiredLock) region.closeRegionOperation();
                 }
 
                 if (currentKey != null) {
@@ -566,15 +545,6 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver {
                 }
                 currentKey = null;
                 return false;
-            }
-
-            @Override
-            public long getMaxResultSize() {
-                return scanner.getMaxResultSize();
-            }
-            @Override
-            public int getBatch() {
-                return scanner.getBatch();
             }
         };
     }

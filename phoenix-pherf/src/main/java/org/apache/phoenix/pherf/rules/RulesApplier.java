@@ -19,12 +19,15 @@
 package org.apache.phoenix.pherf.rules;
 
 import com.google.common.base.Preconditions;
+
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.math3.random.RandomDataGenerator;
 import org.apache.phoenix.pherf.PherfConstants;
 import org.apache.commons.lang.RandomStringUtils;
 import org.apache.commons.lang3.RandomUtils;
 import org.apache.phoenix.pherf.configuration.*;
 import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
 import org.joda.time.format.DateTimeFormat;
 import org.joda.time.format.DateTimeFormatter;
 import org.slf4j.Logger;
@@ -97,13 +100,6 @@ public class RulesApplier {
                 Column columnRule = getColumnForRule(ruleList, phxMetaColumn);
 
                 value = getDataValue(columnRule);
-                synchronized (value) {
-                    // Add the prefix to the value if it exists.
-                    if (columnRule.getPrefix() != null) {
-                        value.setValue(columnRule.getPrefix() + value.getValue());
-                    }
-                }
-
             } else {
                 logger.warn("Attempted to apply rule to data, but could not find a rule to match type:"
                                 + phxMetaColumn.getType()
@@ -122,46 +118,55 @@ public class RulesApplier {
      */
     public DataValue getDataValue(Column column) throws Exception{
         DataValue data = null;
+        String prefix = "";
         int length = column.getLength();
         int nullChance = column.getNullChance();
         List<DataValue> dataValues = column.getDataValues();
 
-        // Return an empty value if we we fall within the configured probability
+        // Return an empty value if we fall within the configured probability of null
         if ((nullChance != Integer.MIN_VALUE) && (isValueNull(nullChance))) {
             return new DataValue(column.getType(), "");
+        }
+
+        if (column.getPrefix() != null) {
+            prefix = column.getPrefix();
+        }
+
+        if ((prefix.length() >= length) && (length > 0)) {
+            logger.warn("You are attempting to generate data with a prefix (" + prefix + ") "
+                    + "That is longer than expected overall field length (" + length + "). "
+                    + "This will certainly lead to unexpected data values.");
         }
 
         switch (column.getType()) {
             case VARCHAR:
                 // Use the specified data values from configs if they exist
                 if ((column.getDataValues() != null) && (column.getDataValues().size() > 0)) {
-                    data = generateDataValue(dataValues);
+                    data = pickDataValueFromList(dataValues);
                 } else {
                     Preconditions.checkArgument(length > 0, "length needs to be > 0");
                     if (column.getDataSequence() == DataSequence.SEQUENTIAL) {
                         data = getSequentialDataValue(column);
                     } else {
-                        String varchar = RandomStringUtils.randomAlphanumeric(length);
-                        data = new DataValue(column.getType(), varchar);
+                        data = getRandomDataValue(column);
                     }
                 }
                 break;
             case CHAR:
                 if ((column.getDataValues() != null) && (column.getDataValues().size() > 0)) {
-                    data = generateDataValue(dataValues);
+                    data = pickDataValueFromList(dataValues);
                 } else {
                     Preconditions.checkArgument(length > 0, "length needs to be > 0");
                     if (column.getDataSequence() == DataSequence.SEQUENTIAL) {
                         data = getSequentialDataValue(column);
                     } else {
-                        String varchar = RandomStringUtils.randomAlphanumeric(length);
-                        data = new DataValue(column.getType(), varchar);
+                        data = getRandomDataValue(column);
                     }
                 }
                 break;
             case DECIMAL:
                 if ((column.getDataValues() != null) && (column.getDataValues().size() > 0)) {
-                    data = generateDataValue(dataValues);
+                    data = pickDataValueFromList(dataValues);
                 } else {
                     int precision = column.getPrecision();
                     double minDbl = column.getMinValue();
@@ -181,7 +186,7 @@ public class RulesApplier {
                 break;
             case INTEGER:
                 if ((column.getDataValues() != null) && (column.getDataValues().size() > 0)) {
-                    data = generateDataValue(dataValues);
+                    data = pickDataValueFromList(dataValues);
                 } else {
                     int minInt = column.getMinValue();
                     int maxInt = column.getMaxValue();
@@ -192,47 +197,60 @@ public class RulesApplier {
                 break;
             case DATE:
                 if ((column.getDataValues() != null) && (column.getDataValues().size() > 0)) {
-                    data = generateDataValue(dataValues);
-                } else {
+                    data = pickDataValueFromList(dataValues);
+                    // Check if date has right format or not
+                    data.setValue(checkDatePattern(data.getValue()));
+                } else if (column.getUseCurrentDate() != true){
                     int minYear = column.getMinValue();
                     int maxYear = column.getMaxValue();
                     Preconditions.checkArgument((minYear > 0) && (maxYear > 0), "min and max values need to be set in configuration");
 
                     String dt = generateRandomDate(minYear, maxYear);
                     data = new DataValue(column.getType(), dt);
+                    data.setMaxValue(String.valueOf(minYear));
+                    data.setMinValue(String.valueOf(maxYear));
+                } else {
+                    String dt = getCurrentDate();
+                    data = new DataValue(column.getType(), dt);
                 }
                 break;
             default:
                 break;
         }
-        Preconditions.checkArgument(data != null, "Data value could not be generated for some reason. Please check configs");
+        Preconditions.checkArgument(data != null,
+                "Data value could not be generated for some reason. Please check configs");
         return data;
     }
 
-    public String generateRandomDate(int min, int max) {
-        int year = RandomUtils.nextInt(min, max);
-        int month = RandomUtils.nextInt(0, 11);
-        int day = RandomUtils.nextInt(0, 31);
-        Calendar calendar = Calendar.getInstance();
-        calendar.set(Calendar.YEAR, year);
-        calendar.set(Calendar.MONTH, month);
-        calendar.set(Calendar.DAY_OF_MONTH, day);
-        SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS z");
-
-        return df.format(calendar.getTime());
+    // Convert years into standard date format yyyy-MM-dd HH:mm:ss.SSS z
+    public String generateRandomDate(int min, int max) throws Exception {
+        String mindt = min + "-01-01 00:00:00.000"; // set min date as starting of min year
+        String maxdt = max + "-12-31 23:59:59.999"; // set max date as end of max year
+        return generateRandomDate(mindt, maxdt);
     }
 
     public String generateRandomDate(String min, String max) throws Exception {
-        DateTimeFormatter fmtr = DateTimeFormat.forPattern(PherfConstants.DEFAULT_DATE_PATTERN);
-        DateTime minDt = fmtr.parseDateTime(min);
-        DateTime maxDt = fmtr.parseDateTime(max);
+        DateTimeFormatter fmtr = DateTimeFormat.forPattern(PherfConstants.DEFAULT_DATE_PATTERN).withZone(DateTimeZone.UTC);
+        DateTime minDt;
+        DateTime maxDt;
         DateTime dt;
+
+        minDt = fmtr.parseDateTime(checkDatePattern(min));
+        maxDt = fmtr.parseDateTime(checkDatePattern(max));
+
         // Get Ms Date between min and max
         synchronized (randomDataGenerator) {
-            long rndLong = randomDataGenerator.nextLong(minDt.getMillis(), maxDt.getMillis());
-            dt = new DateTime(rndLong, minDt.getZone());
+            //Make sure date generated is exactly between the passed limits
+            long rndLong = randomDataGenerator.nextLong(minDt.getMillis()+1, maxDt.getMillis()-1);
+            dt = new DateTime(rndLong, PherfConstants.DEFAULT_TIME_ZONE);
         }
 
+        return fmtr.print(dt);
+    }
+
+    public String getCurrentDate() {
+        DateTimeFormatter fmtr = DateTimeFormat.forPattern(PherfConstants.DEFAULT_DATE_PATTERN).withZone(DateTimeZone.UTC);;
+        DateTime dt = new DateTime(PherfConstants.DEFAULT_TIME_ZONE);
         return fmtr.print(dt);
     }
 
@@ -246,7 +264,7 @@ public class RulesApplier {
         return (rndNull.nextInt(100) < chance);
     }
 
-    private DataValue generateDataValue(List<DataValue> values) throws Exception{
+    private DataValue pickDataValueFromList(List<DataValue> values) throws Exception{
         DataValue generatedDataValue = null;
         int sum = 0, count = 0;
 
@@ -255,7 +273,8 @@ public class RulesApplier {
             int dist = value.getDistribution();
             sum += dist;
         }
-        Preconditions.checkArgument((sum == 100) || (sum == 0), "Distributions need to add up to 100 or not exist.");
+        Preconditions.checkArgument((sum == 100) || (sum == 0),
+                "Distributions need to add up to 100 or not exist.");
 
         // Spin the wheel until we get a value.
         while (generatedDataValue == null) {
@@ -265,7 +284,7 @@ public class RulesApplier {
             int rndIndex = rndVal.nextInt(values.size());
             DataValue valueRule = values.get(rndIndex);
 
-            generatedDataValue = generateDataValue(valueRule);
+            generatedDataValue = pickDataValueFromList(valueRule);
 
             // While it's possible to get here if you have a bunch of really small distributions,
             // It's just really unlikely. This is just a safety just so we actually pick a value.
@@ -278,12 +297,19 @@ public class RulesApplier {
         return generatedDataValue;
     }
 
-    private DataValue generateDataValue(final DataValue valueRule) throws Exception{
+    private DataValue pickDataValueFromList(final DataValue valueRule) throws Exception{
         DataValue retValue = new DataValue(valueRule);
 
         // Path taken when configuration specifies a specific value to be taken with the <value> tag
         if (valueRule.getValue() != null) {
             int chance = (valueRule.getDistribution() == 0) ? 100 : valueRule.getDistribution();
+            return (rndVal.nextInt(100) <= chance) ? retValue : null;
+        }
+
+        // Path taken when configuration specifies to use current date
+        if (valueRule.getUseCurrentDate() == true) {
+            int chance = (valueRule.getDistribution() == 0) ? 100 : valueRule.getDistribution();
+            retValue.setValue(getCurrentDate());
             return (rndVal.nextInt(100) <= chance) ? retValue : null;
         }
 
@@ -293,7 +319,17 @@ public class RulesApplier {
 
         retValue.setValue(generateRandomDate(retValue.getMinValue(), retValue.getMaxValue()));
 
+        retValue.setValue(generateRandomDate(retValue.getMinValue(), retValue.getMaxValue()));
+        retValue.setMinValue(checkDatePattern(valueRule.getMinValue()));
+        retValue.setMaxValue(checkDatePattern(valueRule.getMaxValue()));
         return retValue;
+    }
+
+    // Checks if date is in defult pattern
+    public String checkDatePattern(String date) {
+        DateTimeFormatter fmtr = DateTimeFormat.forPattern(PherfConstants.DEFAULT_DATE_PATTERN).withZone(DateTimeZone.UTC);;
+        DateTime parsedDate = fmtr.parseDateTime(date);
+        return fmtr.print(parsedDate);
     }
 
     /**
@@ -339,6 +375,14 @@ public class RulesApplier {
         }
     }
 
+    public Column getRule(Column phxMetaColumn) {
+        // Assume the first rule map
+        Map<DataTypeMapping, List> ruleMap = modelList.get(0);
+
+        List<Column> ruleList = ruleMap.get(phxMetaColumn.getType());
+        return getColumnForRule(ruleList, phxMetaColumn);
+    }
+
     private Column getColumnForRule(List<Column> ruleList, Column phxMetaColumn) {
 
         // Column pointer to head of list
@@ -371,7 +415,21 @@ public class RulesApplier {
         long inc = COUNTER.getAndIncrement();
         String strInc = String.valueOf(inc);
         String varchar = RandomStringUtils.randomAlphanumeric(column.getLength() - strInc.length());
-        data = new DataValue(column.getType(), strInc + varchar);
+        varchar = (column.getPrefix() != null) ? column.getPrefix() + strInc + varchar :
+                strInc + varchar;
+
+        // Truncate string back down if it exceeds length
+        varchar = StringUtils.left(varchar,column.getLength());
+        data = new DataValue(column.getType(), varchar);
         return data;
+    }
+
+    private DataValue getRandomDataValue(Column column) {
+        String varchar = RandomStringUtils.randomAlphanumeric(column.getLength());
+        varchar = (column.getPrefix() != null) ? column.getPrefix() + varchar : varchar;
+
+        // Truncate string back down if it exceeds length
+        varchar = StringUtils.left(varchar, column.getLength());
+        return new DataValue(column.getType(), varchar);
     }
 }

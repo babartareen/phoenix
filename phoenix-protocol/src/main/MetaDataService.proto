@@ -26,6 +26,7 @@ option optimize_for = SPEED;
 
 import "PTable.proto";
 import "PFunction.proto";
+import "PSchema.proto";
 
 enum MutationCode {
   TABLE_ALREADY_EXISTS = 0;
@@ -42,7 +43,24 @@ enum MutationCode {
   FUNCTION_NOT_FOUND = 11;
   NEWER_FUNCTION_FOUND = 12;
   FUNCTION_NOT_IN_REGION = 13;
+  SCHEMA_ALREADY_EXISTS = 14;
+  NEWER_SCHEMA_FOUND = 15;
+  SCHEMA_NOT_FOUND = 16;
+  SCHEMA_NOT_IN_REGION = 17;
+  TABLES_EXIST_ON_SCHEMA = 18;
+  UNALLOWED_SCHEMA_MUTATION = 19;
+  AUTO_PARTITION_SEQUENCE_NOT_FOUND = 20;
+  CANNOT_COERCE_AUTO_PARTITION_ID = 21;
 };
+
+message SharedTableState {
+  optional bytes tenantId = 1;
+  required bytes schemaName  = 2;
+  required bytes tableName = 3;
+  repeated PColumn columns = 4;  
+  repeated bytes physicalNames = 5;
+  required int32 viewIndexId = 6;
+}
 
 message MetaDataResponse {
   optional MutationCode returnCode = 1;
@@ -53,6 +71,9 @@ message MetaDataResponse {
   optional bytes familyName = 6;
   optional bytes functionName = 7;
   repeated PFunction function = 8;
+  repeated SharedTableState sharedTablesToDelete = 9;
+  optional PSchema schema = 10;
+  optional int64 autoPartitionNum = 11;
 }
 
 message GetTableRequest {
@@ -61,7 +82,7 @@ message GetTableRequest {
   required bytes tableName = 3;
   required int64 tableTimestamp = 4;
   required int64 clientTimestamp = 5;
-  optional int32 clientVersion = 6;
+  optional int32 clientVersion = 6;	
 }
 
 message GetFunctionsRequest {
@@ -70,6 +91,12 @@ message GetFunctionsRequest {
   repeated int64 functionTimestamps = 3;
   required int64 clientTimestamp = 4;
   optional int32 clientVersion = 5;
+}
+
+message GetSchemaRequest {
+  required string schemaName = 1;
+  required int64 clientTimestamp = 2;
+  required int32 clientVersion = 3;
 }
 
 // each byte array represents a MutationProto instance
@@ -86,11 +113,23 @@ message CreateFunctionRequest {
   optional int32 clientVersion = 4;
 }
 
+message CreateSchemaRequest {
+  repeated bytes tableMetadataMutations = 1;
+  required string schemaName = 2;
+  required int32 clientVersion = 3;
+}
+
 message DropTableRequest {
   repeated bytes tableMetadataMutations = 1;
   required string tableType = 2;
   optional bool cascade = 3;
   optional int32 clientVersion = 4;
+}
+
+message DropSchemaRequest {
+  repeated bytes schemaMetadataMutations = 1;
+  required string schemaName = 2;
+  required int32 clientVersion = 3;
 }
 
 message AddColumnRequest {
@@ -119,6 +158,7 @@ message ClearCacheRequest {
 }
 
 message ClearCacheResponse {
+  optional int64 unfreedBytes = 1;
 }
 
 message GetVersionRequest {
@@ -147,15 +187,24 @@ service MetaDataService {
   rpc getFunctions(GetFunctionsRequest)
     returns (MetaDataResponse);
 
+  rpc getSchema(GetSchemaRequest)
+    returns (MetaDataResponse);
+
   rpc createTable(CreateTableRequest)
     returns (MetaDataResponse);
 
   rpc createFunction(CreateFunctionRequest)
     returns (MetaDataResponse);
-    
+
+  rpc createSchema(CreateSchemaRequest)
+	 returns (MetaDataResponse);
+
   rpc dropTable(DropTableRequest)
     returns (MetaDataResponse);
-    
+
+  rpc dropSchema(DropSchemaRequest)
+    returns (MetaDataResponse);
+
   rpc dropFunction(DropFunctionRequest)
     returns (MetaDataResponse);
 

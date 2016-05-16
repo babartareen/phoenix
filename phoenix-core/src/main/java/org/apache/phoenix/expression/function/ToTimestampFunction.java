@@ -50,6 +50,15 @@ public class ToTimestampFunction extends ToDateFunction {
     public ToTimestampFunction(List<Expression> children, String dateFormat, String timeZoneId) throws SQLException {
         super(children, dateFormat, timeZoneId);
     }
+    
+    @Override
+    public ToTimestampFunction clone(List<Expression> children) {
+    	try {
+            return new ToTimestampFunction(children, dateFormat, timeZoneId);
+        } catch (Exception e) {
+            throw new RuntimeException(e); // Impossible, since it was originally constructed this way
+        }
+    }
 
     @Override
     public PDataType getDataType() {

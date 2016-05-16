@@ -28,18 +28,20 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Properties;
 
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.TABLE_NAME;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.TABLE_SCHEM;
 
-// TODO This class needs to be cleanup up a bit. I just wanted to get an initial placeholder in.
 public class PhoenixUtil {
     private static final Logger logger = LoggerFactory.getLogger(PhoenixUtil.class);
     private static String zookeeper;
     private static int rowCountOverride = 0;
     private boolean testEnabled;
     private static PhoenixUtil instance;
+    private static boolean useThinDriver;
+    private static String queryServerUrl;
 
     private PhoenixUtil() {
         this(false);
@@ -58,6 +60,19 @@ public class PhoenixUtil {
         return instance;
     }
 
+    public static void useThinDriver(String queryServerUrl) {
+        PhoenixUtil.useThinDriver = true;
+        PhoenixUtil.queryServerUrl = Objects.requireNonNull(queryServerUrl);
+    }
+
+    public static String getQueryServerUrl() {
+        return PhoenixUtil.queryServerUrl;
+    }
+
+    public static boolean isThinDriver() {
+        return PhoenixUtil.useThinDriver;
+    }
+
     public Connection getConnection() throws Exception {
         return getConnection(null);
     }
@@ -67,17 +82,31 @@ public class PhoenixUtil {
     }
 
     private Connection getConnection(String tenantId, boolean testEnabled) throws Exception {
-        if (null == zookeeper) {
-            throw new IllegalArgumentException(
-                    "Zookeeper must be set before initializing connection!");
+        if (useThinDriver) {
+            if (null == queryServerUrl) {
+                throw new IllegalArgumentException("QueryServer URL must be set before" +
+                      " initializing connection");
+            }
+            Properties props = new Properties();
+            if (null != tenantId) {
+                props.setProperty("TenantId", tenantId);
+                logger.debug("\nSetting tenantId to " + tenantId);
+            }
+            String url = "jdbc:phoenix:thin:url=" + queryServerUrl + ";serialization=PROTOBUF";
+            return DriverManager.getConnection(url, props);
+        } else {
+            if (null == zookeeper) {
+                throw new IllegalArgumentException(
+                        "Zookeeper must be set before initializing connection!");
+            }
+            Properties props = new Properties();
+            if (null != tenantId) {
+                props.setProperty("TenantId", tenantId);
+                logger.debug("\nSetting tenantId to " + tenantId);
+            }
+            String url = "jdbc:phoenix:" + zookeeper + (testEnabled ? ";test=true" : "");
+            return DriverManager.getConnection(url, props);
         }
-        Properties props = new Properties();
-        if (null != tenantId) {
-            props.setProperty("TenantId", tenantId);
-            logger.debug("\nSetting tenantId to " + tenantId);
-        }
-        String url = "jdbc:phoenix:" + zookeeper + (testEnabled ? ";test=true" : "");
-        return DriverManager.getConnection(url, props);
     }
 
     public boolean executeStatement(String sql, Scenario scenario) throws Exception {
@@ -111,23 +140,25 @@ public class PhoenixUtil {
             result = preparedStatement.execute();
             connection.commit();
         } finally {
-            preparedStatement.close();
+            if(preparedStatement != null) {
+                preparedStatement.close();
+            }
         }
         return result;
     }
 
-    public boolean executeStatement(String sql, Connection connection) {
+    public boolean executeStatement(String sql, Connection connection) throws SQLException{
         boolean result = false;
         PreparedStatement preparedStatement = null;
         try {
             preparedStatement = connection.prepareStatement(sql);
             result = preparedStatement.execute();
             connection.commit();
-        } catch (SQLException e) {
-            e.printStackTrace();
         } finally {
             try {
-                preparedStatement.close();
+                if (preparedStatement != null) {
+                    preparedStatement.close();
+                }
             } catch (SQLException e) {
                 e.printStackTrace();
             }
@@ -199,7 +230,7 @@ public class PhoenixUtil {
 
     public synchronized List<Column> getColumnsFromPhoenix(String schemaName, String tableName,
             Connection connection) throws SQLException {
-        List<Column> columnList = new ArrayList<Column>();
+        List<Column> columnList = new ArrayList<>();
         ResultSet resultSet = null;
         try {
             resultSet = getColumnsMetaData(schemaName, tableName, connection);
@@ -271,7 +302,12 @@ public class PhoenixUtil {
 
     public static void setZookeeper(String zookeeper) {
         logger.info("Setting zookeeper: " + zookeeper);
-        PhoenixUtil.zookeeper = zookeeper;
+        useThickDriver(zookeeper);
+    }
+
+    public static void useThickDriver(String zookeeper) {
+        PhoenixUtil.useThinDriver = false;
+        PhoenixUtil.zookeeper = Objects.requireNonNull(zookeeper);
     }
 
     public static int getRowCountOverride() {
@@ -293,11 +329,33 @@ public class PhoenixUtil {
         executeStatement("UPDATE STATISTICS " + tableName, scenario);
     }
 
-    public MonitorManager loadCustomMonitors(MonitorManager manager) throws Exception {
-        Properties
-                properties =
-                PherfConstants.create().getProperties(PherfConstants.PHERF_PROPERTIES, false);
-
-        return manager;
+    /**
+     * Get explain plan for a query
+     *
+     * @param query
+     * @return
+     * @throws SQLException
+     */
+    public String getExplainPlan(Query query) throws SQLException {
+        Connection conn = null;
+        ResultSet rs = null;
+        PreparedStatement statement = null;
+        StringBuilder buf = new StringBuilder();
+        try {
+            conn = getConnection(query.getTenantId());
+            statement = conn.prepareStatement("EXPLAIN " + query.getStatement());
+            rs = statement.executeQuery();
+            while (rs.next()) {
+                buf.append(rs.getString(1).trim().replace(",", "-"));
+            }
+            statement.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            if (rs != null) rs.close();
+            if (statement != null) statement.close();
+            if (conn != null) conn.close();
+        }
+        return buf.toString();
     }
 }

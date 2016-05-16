@@ -48,13 +48,11 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Arrays;
 import java.util.Map;
 import java.util.Properties;
 
 import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HTableDescriptor;
-import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.client.Put;
@@ -69,15 +67,15 @@ import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.QueryServices;
-import org.apache.phoenix.schema.types.PChar;
 import org.apache.phoenix.schema.ColumnNotFoundException;
-import org.apache.phoenix.schema.types.PDecimal;
-import org.apache.phoenix.schema.types.PInteger;
-import org.apache.phoenix.schema.types.PLong;
 import org.apache.phoenix.schema.PTable.ViewType;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.ReadOnlyTableException;
 import org.apache.phoenix.schema.TableNotFoundException;
+import org.apache.phoenix.schema.types.PChar;
+import org.apache.phoenix.schema.types.PDecimal;
+import org.apache.phoenix.schema.types.PInteger;
+import org.apache.phoenix.schema.types.PLong;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.PropertiesUtil;
 import org.apache.phoenix.util.ReadOnlyProps;
@@ -148,20 +146,19 @@ public class QueryDatabaseMetaDataIT extends BaseClientManagedTimeIT {
         assertEquals(CUSTOM_ENTITY_DATA_SCHEMA_NAME, rs.getString("TABLE_SCHEM"));
         assertEquals(CUSTOM_ENTITY_DATA_NAME, rs.getString("TABLE_NAME"));
         assertEquals(PTableType.TABLE.toString(), rs.getString("TABLE_TYPE"));
+        assertEquals("false", rs.getString(PhoenixDatabaseMetaData.TRANSACTIONAL));
 
         rs = dbmd.getTables(null, CUSTOM_ENTITY_DATA_SCHEMA_NAME, CUSTOM_ENTITY_DATA_NAME, null);
         assertTrue(rs.next());
-        assertEquals(rs.getString("TABLE_SCHEM"),CUSTOM_ENTITY_DATA_SCHEMA_NAME);
-        assertEquals(rs.getString("TABLE_NAME"),CUSTOM_ENTITY_DATA_NAME);
-        assertEquals(PTableType.TABLE.toString(), rs.getString("TABLE_TYPE"));
-        assertFalse(rs.next());
-        
         try {
             rs.getString("RANDOM_COLUMN_NAME");
             fail();
         } catch (ColumnNotFoundException e) {
             // expected
         }
+        assertEquals(rs.getString("TABLE_SCHEM"),CUSTOM_ENTITY_DATA_SCHEMA_NAME);
+        assertEquals(rs.getString("TABLE_NAME"),CUSTOM_ENTITY_DATA_NAME);
+        assertEquals(PTableType.TABLE.toString(), rs.getString("TABLE_TYPE"));
         assertFalse(rs.next());
         
         rs = dbmd.getTables(null, "", "_TABLE", new String[] {PTableType.TABLE.toString()});
@@ -178,12 +175,13 @@ public class QueryDatabaseMetaDataIT extends BaseClientManagedTimeIT {
 
     @Test
     public void testSchemaMetadataScan() throws SQLException {
-        long ts = nextTimestamp();
-        ensureTableCreated(getUrl(), CUSTOM_ENTITY_DATA_FULL_NAME, null, ts);
-        ensureTableCreated(getUrl(), PTSDB_NAME, null, ts);
         Properties props = new Properties();
-        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 5));
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(1));
+        props.setProperty(QueryServices.IS_NAMESPACE_MAPPING_ENABLED, Boolean.toString(true));
         Connection conn = DriverManager.getConnection(getUrl(), props);
+        conn.createStatement().execute("CREATE SCHEMA " + CUSTOM_ENTITY_DATA_SCHEMA_NAME);
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(2));
+        conn = DriverManager.getConnection(getUrl(), props);
         DatabaseMetaData dbmd = conn.getMetaData();
         ResultSet rs;
         rs = dbmd.getSchemas(null, CUSTOM_ENTITY_DATA_SCHEMA_NAME);
@@ -194,13 +192,7 @@ public class QueryDatabaseMetaDataIT extends BaseClientManagedTimeIT {
 
         rs = dbmd.getSchemas(null, null);
         assertTrue(rs.next());
-        assertEquals(rs.getString("TABLE_SCHEM"),null);
-        assertEquals(rs.getString("TABLE_CATALOG"),null);
-        assertTrue(rs.next());
         assertEquals(rs.getString("TABLE_SCHEM"),CUSTOM_ENTITY_DATA_SCHEMA_NAME);
-        assertEquals(rs.getString("TABLE_CATALOG"),null);
-        assertTrue(rs.next());
-        assertEquals(rs.getString("TABLE_SCHEM"),PhoenixDatabaseMetaData.SYSTEM_CATALOG_SCHEMA);
         assertEquals(rs.getString("TABLE_CATALOG"),null);
         assertFalse(rs.next());
     }

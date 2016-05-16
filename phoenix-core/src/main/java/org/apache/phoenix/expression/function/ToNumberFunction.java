@@ -30,6 +30,7 @@ import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.io.WritableUtils;
 
 import com.google.common.base.Preconditions;
+
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.parse.FunctionParseNode.Argument;
 import org.apache.phoenix.parse.FunctionParseNode.BuiltInFunction;
@@ -66,6 +67,15 @@ public class ToNumberFunction extends ScalarFunction {
         this.type = type;
         this.formatString = formatString;
         this.format = formatter;
+    }
+    
+    @Override
+    public ToNumberFunction clone(List<Expression> children) {
+    	try {
+            return new ToNumberFunction(children, type, formatString, format);
+        } catch (Exception e) {
+            throw new RuntimeException(e); // Impossible, since it was originally constructed this way
+        }
     }
 
     @Override

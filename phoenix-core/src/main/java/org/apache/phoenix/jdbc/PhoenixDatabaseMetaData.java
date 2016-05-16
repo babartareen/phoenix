@@ -52,6 +52,7 @@ import org.apache.phoenix.iterate.DelegateResultIterator;
 import org.apache.phoenix.iterate.MaterializedResultIterator;
 import org.apache.phoenix.iterate.ResultIterator;
 import org.apache.phoenix.query.QueryConstants;
+import org.apache.phoenix.schema.MetaDataClient;
 import org.apache.phoenix.schema.PDatum;
 import org.apache.phoenix.schema.PName;
 import org.apache.phoenix.schema.PTable.LinkType;
@@ -73,32 +74,10 @@ import com.google.common.collect.Lists;
 
 /**
  *
- * JDBC DatabaseMetaData implementation of Phoenix reflecting read-only nature of driver.
- * Supported metadata methods include:
- * {@link #getTables(String, String, String, String[])}
- * {@link #getColumns(String, String, String, String)}
- * {@link #getTableTypes()}
- * {@link #getPrimaryKeys(String, String, String)}
- * {@link #getIndexInfo(String, String, String, boolean, boolean)}
- * {@link #getSchemas()}
- * {@link #getSchemas(String, String)}
- * {@link #getDatabaseMajorVersion()}
- * {@link #getDatabaseMinorVersion()}
- * {@link #getClientInfoProperties()}
- * {@link #getConnection()}
- * {@link #getDatabaseProductName()}
- * {@link #getDatabaseProductVersion()}
- * {@link #getDefaultTransactionIsolation()}
- * {@link #getDriverName()}
- * {@link #getDriverVersion()}
- * {@link #getSuperTables(String, String, String)}
- * {@link #getCatalogs()}
- * Other ResultSet methods return an empty result set.
- *
- *
- * @since 0.1
+ * JDBC DatabaseMetaData implementation of Phoenix.
+ * 
  */
-public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.phoenix.jdbc.Jdbc7Shim.DatabaseMetaData {
+public class PhoenixDatabaseMetaData implements DatabaseMetaData {
     public static final int INDEX_NAME_INDEX = 4; // Shared with FAMILY_NAME_INDEX
     public static final int FAMILY_NAME_INDEX = 4;
     public static final int COLUMN_NAME_INDEX = 3;
@@ -106,24 +85,37 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
     public static final int SCHEMA_NAME_INDEX = 1;
     public static final int TENANT_ID_INDEX = 0;
 
-
     public static final int TYPE_INDEX = 2;
     public static final int FUNTION_NAME_INDEX = 1;
-    
 
     public static final String SYSTEM_CATALOG_SCHEMA = QueryConstants.SYSTEM_SCHEMA_NAME;
     public static final byte[] SYSTEM_CATALOG_SCHEMA_BYTES = QueryConstants.SYSTEM_SCHEMA_NAME_BYTES;
+    public static final String SYSTEM_SCHEMA_NAME = QueryConstants.SYSTEM_SCHEMA_NAME;
+    public static final byte[] SYSTEM_SCHEMA_NAME_BYTES = QueryConstants.SYSTEM_SCHEMA_NAME_BYTES;
+
     public static final String SYSTEM_CATALOG_TABLE = "CATALOG";
     public static final byte[] SYSTEM_CATALOG_TABLE_BYTES = Bytes.toBytes(SYSTEM_CATALOG_TABLE);
     public static final String SYSTEM_CATALOG = SYSTEM_CATALOG_SCHEMA + ".\"" + SYSTEM_CATALOG_TABLE + "\"";
-    public static final String SYSTEM_CATALOG_NAME = SchemaUtil.getTableName(SYSTEM_CATALOG_SCHEMA, SYSTEM_CATALOG_TABLE);
+    public static final String SYSTEM_CATALOG_NAME = SchemaUtil.getTableName(SYSTEM_CATALOG_SCHEMA,
+            SYSTEM_CATALOG_TABLE);
     public static final byte[] SYSTEM_CATALOG_NAME_BYTES = Bytes.toBytes(SYSTEM_CATALOG_NAME);
     public static final String SYSTEM_STATS_TABLE = "STATS";
     public static final String SYSTEM_STATS_NAME = SchemaUtil.getTableName(SYSTEM_CATALOG_SCHEMA, SYSTEM_STATS_TABLE);
+    public static final String IS_NAMESPACE_MAPPED = "IS_NAMESPACE_MAPPED";
+    public static final byte[] IS_NAMESPACE_MAPPED_BYTES = Bytes.toBytes(IS_NAMESPACE_MAPPED);
     public static final byte[] SYSTEM_STATS_NAME_BYTES = Bytes.toBytes(SYSTEM_STATS_NAME);
-
+    public static final byte[] SYSTEM_STATS_TABLE_BYTES = Bytes.toBytes(SYSTEM_STATS_TABLE);
     public static final String SYSTEM_CATALOG_ALIAS = "\"SYSTEM.TABLE\"";
 
+    public static final byte[] SYSTEM_SEQUENCE_FAMILY_BYTES = QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES;
+    public static final String SYSTEM_SEQUENCE_SCHEMA = SYSTEM_CATALOG_SCHEMA;
+    public static final byte[] SYSTEM_SEQUENCE_SCHEMA_BYTES = Bytes.toBytes(SYSTEM_SEQUENCE_SCHEMA);
+    public static final String SYSTEM_SEQUENCE_TABLE = "SEQUENCE";
+    public static final byte[] SYSTEM_SEQUENCE_TABLE_BYTES = Bytes.toBytes(SYSTEM_SEQUENCE_TABLE);
+    public static final String SYSTEM_SEQUENCE = SYSTEM_CATALOG_SCHEMA + ".\"" + SYSTEM_SEQUENCE_TABLE + "\"";
+    public static final String SYSTEM_SEQUENCE_NAME = SchemaUtil.getTableName(SYSTEM_SEQUENCE_SCHEMA, SYSTEM_SEQUENCE_TABLE);
+    public static final byte[] SYSTEM_SEQUENCE_NAME_BYTES = Bytes.toBytes(SYSTEM_SEQUENCE_NAME);
+    
     public static final String TABLE_NAME = "TABLE_NAME";
     public static final byte[] TABLE_NAME_BYTES = Bytes.toBytes(TABLE_NAME);
     public static final String TABLE_TYPE = "TABLE_TYPE";
@@ -211,6 +203,8 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
     public static final byte[] VIEW_INDEX_ID_BYTES = Bytes.toBytes(VIEW_INDEX_ID);
     public static final String BASE_COLUMN_COUNT = "BASE_COLUMN_COUNT";
     public static final byte[] BASE_COLUMN_COUNT_BYTES = Bytes.toBytes(BASE_COLUMN_COUNT);
+    public static final String IS_ROW_TIMESTAMP = "IS_ROW_TIMESTAMP";
+    public static final byte[] IS_ROW_TIMESTAMP_BYTES = Bytes.toBytes(IS_ROW_TIMESTAMP);
 
     public static final String TABLE_FAMILY = QueryConstants.DEFAULT_COLUMN_FAMILY;
     public static final byte[] TABLE_FAMILY_BYTES = QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES;
@@ -241,14 +235,6 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
     public static final String NUM_ARGS = "NUM_ARGS";
     public static final byte[] NUM_ARGS_BYTES = Bytes.toBytes(NUM_ARGS);
     
-    public static final byte[] SEQUENCE_FAMILY_BYTES = QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES;
-    public static final String SEQUENCE_SCHEMA_NAME = SYSTEM_CATALOG_SCHEMA;
-    public static final byte[] SEQUENCE_SCHEMA_NAME_BYTES = Bytes.toBytes(SEQUENCE_SCHEMA_NAME);
-    public static final String SEQUENCE_TABLE_NAME = TYPE_SEQUENCE;
-    public static final byte[] SEQUENCE_TABLE_NAME_BYTES = Bytes.toBytes(SEQUENCE_TABLE_NAME);
-    public static final String SEQUENCE_FULLNAME_ESCAPED = SYSTEM_CATALOG_SCHEMA + ".\"" + TYPE_SEQUENCE + "\"";
-    public static final String SEQUENCE_FULLNAME = SchemaUtil.getTableName(SEQUENCE_SCHEMA_NAME, SEQUENCE_TABLE_NAME);
-    public static final byte[] SEQUENCE_FULLNAME_BYTES = Bytes.toBytes(SEQUENCE_FULLNAME);
     public static final String SEQUENCE_SCHEMA = "SEQUENCE_SCHEMA";
     public static final String SEQUENCE_NAME = "SEQUENCE_NAME";
     public static final String CURRENT_VALUE = "CURRENT_VALUE";
@@ -292,6 +278,7 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
     public static final byte[] MAX_KEY_BYTES = Bytes.toBytes(MAX_KEY);
     public static final String LAST_STATS_UPDATE_TIME = "LAST_STATS_UPDATE_TIME";
     public static final byte[] LAST_STATS_UPDATE_TIME_BYTES = Bytes.toBytes(LAST_STATS_UPDATE_TIME);
+    public static final String GUIDE_POST_KEY = "GUIDE_POST_KEY";
 
     public static final String PARENT_TENANT_ID = "PARENT_TENANT_ID";
     public static final byte[] PARENT_TENANT_ID_BYTES = Bytes.toBytes(PARENT_TENANT_ID);
@@ -299,11 +286,23 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
     private static final String TENANT_POS_SHIFT = "TENANT_POS_SHIFT";
     private static final byte[] TENANT_POS_SHIFT_BYTES = Bytes.toBytes(TENANT_POS_SHIFT);
 
+    public static final String TRANSACTIONAL = "TRANSACTIONAL";
+    public static final byte[] TRANSACTIONAL_BYTES = Bytes.toBytes(TRANSACTIONAL);
+
+    public static final String UPDATE_CACHE_FREQUENCY = "UPDATE_CACHE_FREQUENCY";
+    public static final byte[] UPDATE_CACHE_FREQUENCY_BYTES = Bytes.toBytes(UPDATE_CACHE_FREQUENCY);
+
+    public static final String AUTO_PARTITION_SEQ = "AUTO_PARTITION_SEQ";
+    public static final byte[] AUTO_PARTITION_SEQ_BYTES = Bytes.toBytes(AUTO_PARTITION_SEQ);
+    
+    public static final String ASYNC_CREATED_DATE = "ASYNC_CREATED_DATE";
+
     private final PhoenixConnection connection;
     private final ResultSet emptyResultSet;
     public static final int MAX_LOCAL_SI_VERSION_DISALLOW = VersionUtil.encodeVersion("0", "98", "8");
     public static final int MIN_LOCAL_SI_VERSION_DISALLOW = VersionUtil.encodeVersion("0", "98", "6");
-
+    public static final int MIN_RENEW_LEASE_VERSION = VersionUtil.encodeVersion("1", "1", "3");
+    
     // Version below which we should turn off essential column family.
     public static final int ESSENTIAL_FAMILY_VERSION_THRESHOLD = VersionUtil.encodeVersion("0", "94", "7");
     // Version below which we should disallow usage of mutable secondary indexing.
@@ -922,10 +921,10 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
                 TENANT_ID + " " + TABLE_CATALOG +
                 " from " + SYSTEM_CATALOG + " " + SYSTEM_CATALOG_ALIAS +
                 " where " + COLUMN_NAME + " is null");
-        this.addTenantIdFilter(buf, catalog);
         if (schemaPattern != null) {
             buf.append(" and " + TABLE_SCHEM + " like '" + StringUtil.escapeStringConstant(schemaPattern) + "'");
         }
+        buf.append(" and " + TABLE_NAME + " = '" + MetaDataClient.EMPTY_TABLE + "'");
         Statement stmt = connection.createStatement();
         return stmt.executeQuery(buf.toString());
     }
@@ -1044,10 +1043,12 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
                 MULTI_TENANT + "," +
                 VIEW_STATEMENT + "," +
                 SQLViewTypeFunction.NAME + "(" + VIEW_TYPE + ") AS " + VIEW_TYPE + "," +
-                SQLIndexTypeFunction.NAME + "(" + INDEX_TYPE + ") AS " + INDEX_TYPE +
+                SQLIndexTypeFunction.NAME + "(" + INDEX_TYPE + ") AS " + INDEX_TYPE + "," +
+                TRANSACTIONAL +
                 " from " + SYSTEM_CATALOG + " " + SYSTEM_CATALOG_ALIAS +
                 " where " + COLUMN_NAME + " is null" +
-                " and " + COLUMN_FAMILY + " is null");
+                " and " + COLUMN_FAMILY + " is null" +
+                " and " + TABLE_NAME + " != '" + MetaDataClient.EMPTY_TABLE + "'");
         addTenantIdFilter(buf, catalog);
         if (schemaPattern != null) {
             buf.append(" and " + TABLE_SCHEM + (schemaPattern.length() == 0 ? " is null" : " like '" + StringUtil.escapeStringConstant(schemaPattern) + "'" ));
@@ -1149,32 +1150,32 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
 
     @Override
     public boolean othersDeletesAreVisible(int type) throws SQLException {
-        return true;
+        return false;
     }
 
     @Override
     public boolean othersInsertsAreVisible(int type) throws SQLException {
-        return true;
+        return false;
     }
 
     @Override
     public boolean othersUpdatesAreVisible(int type) throws SQLException {
-        return true;
+        return false;
     }
 
     @Override
     public boolean ownDeletesAreVisible(int type) throws SQLException {
-        return false;
+        return true;
     }
 
     @Override
     public boolean ownInsertsAreVisible(int type) throws SQLException {
-        return false;
+        return true;
     }
 
     @Override
     public boolean ownUpdatesAreVisible(int type) throws SQLException {
-        return false;
+        return true;
     }
 
     @Override
@@ -1380,7 +1381,7 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
 
     @Override
     public boolean supportsMultipleTransactions() throws SQLException {
-        return false;
+        return true;
     }
 
     @Override
@@ -1527,12 +1528,12 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData, org.apache.pho
 
     @Override
     public boolean supportsTransactionIsolationLevel(int level) throws SQLException {
-        return level == connection.getTransactionIsolation();
+        return true;
     }
 
     @Override
     public boolean supportsTransactions() throws SQLException {
-        return false;
+        return true;
     }
 
     @Override

@@ -114,8 +114,6 @@ public class SubqueryUsingSortMergeJoinIT extends BaseHBaseManagedTimeIT {
                 "        CLIENT MERGE SORT\n" +
                 "    AND\n" +
                 "        CLIENT PARALLEL 1-WAY FULL SCAN OVER " + JOIN_SUPPLIER_TABLE_DISPLAY_NAME + "\n" +
-                "            SERVER SORTED BY [\"S.supplier_id\"]\n" +
-                "        CLIENT MERGE SORT\n" +
                 "    CLIENT SORTED BY [\"I.item_id\"]\n" +
                 "AND (SKIP MERGE)\n" +
                 "    CLIENT PARALLEL 1-WAY RANGE SCAN OVER " + JOIN_ORDER_TABLE_DISPLAY_NAME + " ['000000000000001'] - [*]\n" +
@@ -193,7 +191,6 @@ public class SubqueryUsingSortMergeJoinIT extends BaseHBaseManagedTimeIT {
                 "        CLIENT PARALLEL 1-WAY FULL SCAN OVER " + JOIN_SCHEMA + ".idx_item\n" +
                 "            SERVER FILTER BY FIRST KEY ONLY\n" +
                 "            SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY \\[\".+.:item_id\", \".+.0:NAME\"\\]\n" +
-                "        CLIENT MERGE SORT\n" +
                 "            PARALLEL ANTI-JOIN TABLE 0 \\(SKIP MERGE\\)\n" +
                 "                CLIENT PARALLEL 1-WAY FULL SCAN OVER " + JOIN_ORDER_TABLE_DISPLAY_NAME + "\n" +
                 "                    SERVER AGGREGATE INTO DISTINCT ROWS BY \\[\"item_id\"\\]\n" +
@@ -203,7 +200,6 @@ public class SubqueryUsingSortMergeJoinIT extends BaseHBaseManagedTimeIT {
                 "    CLIENT PARALLEL 1-WAY FULL SCAN OVER " + JOIN_SCHEMA + ".idx_item\n" +
                 "        SERVER FILTER BY FIRST KEY ONLY\n" +
                 "        SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY \\[\".+.:item_id\", \".+.0:NAME\"\\]\n" +
-                "    CLIENT MERGE SORT\n" +
                 "        PARALLEL SEMI-JOIN TABLE 0 \\(SKIP MERGE\\)\n" +
                 "            CLIENT PARALLEL 1-WAY FULL SCAN OVER " + JOIN_ORDER_TABLE_DISPLAY_NAME + "\n" +
                 "                SERVER AGGREGATE INTO DISTINCT ROWS BY \\[\"item_id\"\\]\n" +
@@ -259,7 +255,7 @@ public class SubqueryUsingSortMergeJoinIT extends BaseHBaseManagedTimeIT {
                 "        CLIENT PARALLEL 1-WAY RANGE SCAN OVER " + MetaDataUtil.LOCAL_INDEX_TABLE_PREFIX + JOIN_ITEM_TABLE_DISPLAY_NAME + " \\[-32768\\]\n" +
                 "            SERVER FILTER BY FIRST KEY ONLY\n" +
                 "            SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY \\[\".+.:item_id\", \".+.0:NAME\"\\]\n" +
-                "        CLIENT MERGE SORT\n" +
+                "        CLIENT MERGE SORT\n" + 
                 "            PARALLEL ANTI-JOIN TABLE 0 \\(SKIP MERGE\\)\n" +
                 "                CLIENT PARALLEL 1-WAY FULL SCAN OVER " + JOIN_ORDER_TABLE_DISPLAY_NAME + "\n" +
                 "                    SERVER AGGREGATE INTO DISTINCT ROWS BY \\[\"item_id\"\\]\n" +
@@ -269,7 +265,7 @@ public class SubqueryUsingSortMergeJoinIT extends BaseHBaseManagedTimeIT {
                 "    CLIENT PARALLEL 1-WAY RANGE SCAN OVER " + MetaDataUtil.LOCAL_INDEX_TABLE_PREFIX + JOIN_ITEM_TABLE_DISPLAY_NAME + " \\[-32768\\]\n" +
                 "        SERVER FILTER BY FIRST KEY ONLY\n" +
                 "        SERVER AGGREGATE INTO ORDERED DISTINCT ROWS BY \\[\".+.:item_id\", \".+.0:NAME\"\\]\n" +
-                "    CLIENT MERGE SORT\n" +
+                "    CLIENT MERGE SORT\n" + 
                 "        PARALLEL SEMI-JOIN TABLE 0 \\(SKIP MERGE\\)\n" +
                 "            CLIENT PARALLEL 1-WAY FULL SCAN OVER " + JOIN_ORDER_TABLE_DISPLAY_NAME + "\n" +
                 "                SERVER AGGREGATE INTO DISTINCT ROWS BY \\[\"item_id\"\\]\n" +

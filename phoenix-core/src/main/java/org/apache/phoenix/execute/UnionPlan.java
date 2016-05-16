@@ -22,6 +22,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.phoenix.compile.ExplainPlan;
@@ -34,13 +35,17 @@ import org.apache.phoenix.compile.StatementContext;
 import org.apache.phoenix.iterate.ConcatResultIterator;
 import org.apache.phoenix.iterate.LimitingResultIterator;
 import org.apache.phoenix.iterate.MergeSortTopNResultIterator;
+import org.apache.phoenix.iterate.OffsetResultIterator;
 import org.apache.phoenix.iterate.ParallelScanGrouper;
 import org.apache.phoenix.iterate.ResultIterator;
 import org.apache.phoenix.iterate.UnionResultIterators;
+import org.apache.phoenix.jdbc.PhoenixStatement.Operation;
 import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.schema.TableRef;
 import org.apache.phoenix.util.SQLCloseable;
+
+import com.google.common.collect.Sets;
 
 
 public class UnionPlan implements QueryPlan {
@@ -52,6 +57,7 @@ public class UnionPlan implements QueryPlan {
     private final OrderBy orderBy;
     private final StatementContext parentContext;
     private final Integer limit;
+    private final Integer offset;
     private final GroupBy groupBy;
     private final RowProjector projector;
     private final boolean isDegenerate;
@@ -59,7 +65,7 @@ public class UnionPlan implements QueryPlan {
     private UnionResultIterators iterators;
 
     public UnionPlan(StatementContext context, FilterableStatement statement, TableRef table, RowProjector projector,
-            Integer limit, OrderBy orderBy, GroupBy groupBy, List<QueryPlan> plans, ParameterMetaData paramMetaData) throws SQLException {
+            Integer limit, Integer offset, OrderBy orderBy, GroupBy groupBy, List<QueryPlan> plans, ParameterMetaData paramMetaData) throws SQLException {
         this.parentContext = context;
         this.statement = statement;
         this.tableRef = table;
@@ -68,6 +74,7 @@ public class UnionPlan implements QueryPlan {
         this.orderBy = orderBy;
         this.groupBy = groupBy;
         this.plans = plans;
+        this.offset= offset;
         this.paramMetaData = paramMetaData;
         boolean isDegen = true;
         for (QueryPlan plan : plans) {           
@@ -119,6 +126,11 @@ public class UnionPlan implements QueryPlan {
     }
 
     @Override
+    public Integer getOffset() {
+        return offset;
+    }
+
+    @Override
     public RowProjector getProjector() {
         return projector;
     }
@@ -127,7 +139,11 @@ public class UnionPlan implements QueryPlan {
     public final ResultIterator iterator(ParallelScanGrouper scanGrouper) throws SQLException {
         return iterator(Collections.<SQLCloseable>emptyList());
     }
-    
+
+    @Override
+    public final ResultIterator iterator(ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
+        return iterator(Collections.<SQLCloseable>emptyList());
+    }
     @Override
     public final ResultIterator iterator() throws SQLException {
         return iterator(Collections.<SQLCloseable>emptyList());
@@ -139,9 +155,12 @@ public class UnionPlan implements QueryPlan {
         boolean isOrdered = !orderBy.getOrderByExpressions().isEmpty();
 
         if (isOrdered) { // TopN
-            scanner = new MergeSortTopNResultIterator(iterators, limit, orderBy.getOrderByExpressions());
+            scanner = new MergeSortTopNResultIterator(iterators, limit, offset, orderBy.getOrderByExpressions());
         } else {
             scanner = new ConcatResultIterator(iterators);
+            if (offset != null) {
+                scanner = new OffsetResultIterator(scanner, offset);
+            }
             if (limit != null) {
                 scanner = new LimitingResultIterator(scanner, limit);
             }          
@@ -197,5 +216,19 @@ public class UnionPlan implements QueryPlan {
     public boolean useRoundRobinIterator() throws SQLException {
         return false;
     }
-}
 
+	@Override
+	public Operation getOperation() {
+		return statement.getOperation();
+	}
+
+	@Override
+	public Set<TableRef> getSourceRefs() {
+		// TODO is this correct?
+		Set<TableRef> sources = Sets.newHashSetWithExpectedSize(plans.size());
+		for (QueryPlan plan : plans) {
+			sources.addAll(plan.getSourceRefs());
+		}
+		return sources;
+	}
+}

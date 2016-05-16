@@ -17,15 +17,26 @@
  */
 package org.apache.phoenix.util;
 
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.COLUMN_FAMILY;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.LINK_TYPE;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SYSTEM_CATALOG_SCHEMA;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SYSTEM_CATALOG_TABLE;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.TABLE_NAME;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.TABLE_SCHEM;
 import static org.apache.phoenix.util.SchemaUtil.getVarChars;
 
 import java.io.IOException;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeyValue;
@@ -35,6 +46,7 @@ import org.apache.hadoop.hbase.client.HConnectionManager;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
 import org.apache.hadoop.hbase.protobuf.RequestConverter;
@@ -49,6 +61,7 @@ import org.apache.phoenix.hbase.index.util.VersionUtil;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.QueryConstants;
+import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PName;
 import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.schema.PTable.LinkType;
@@ -71,9 +84,7 @@ public class MetaDataUtil {
     private static final Logger logger = LoggerFactory.getLogger(MetaDataUtil.class);
   
     public static final String VIEW_INDEX_TABLE_PREFIX = "_IDX_";
-    public static final byte[] VIEW_INDEX_TABLE_PREFIX_BYTES = Bytes.toBytes(VIEW_INDEX_TABLE_PREFIX);
     public static final String LOCAL_INDEX_TABLE_PREFIX = "_LOCAL_IDX_";
-    public static final byte[] LOCAL_INDEX_TABLE_PREFIX_BYTES = Bytes.toBytes(LOCAL_INDEX_TABLE_PREFIX);
     public static final String VIEW_INDEX_SEQUENCE_PREFIX = "_SEQ_";
     public static final String VIEW_INDEX_SEQUENCE_NAME_PREFIX = "_ID_";
     public static final byte[] VIEW_INDEX_SEQUENCE_PREFIX_BYTES = Bytes.toBytes(VIEW_INDEX_SEQUENCE_PREFIX);
@@ -107,14 +118,14 @@ public class MetaDataUtil {
     }
     
     // TODO: generalize this to use two bytes to return a SQL error code instead
-    public static long encodeMutableIndexConfiguredProperly(long version, boolean isValid) {
+    public static long encodeHasIndexWALCodec(long version, boolean isValid) {
         if (!isValid) {
             return version | 1;
         }
         return version;
     }
     
-    public static boolean decodeMutableIndexConfiguredProperly(long version) {
+    public static boolean decodeHasIndexWALCodec(long version) {
         return (version & 0xF) == 0;
     }
 
@@ -234,11 +245,20 @@ public class MetaDataUtil {
      * Returns the first Put element in <code>tableMetaData</code>. There could be leading Delete elements before the
      * table header row
      */
-    public static Mutation getPutOnlyTableHeaderRow(List<Mutation> tableMetaData) {
+    public static Put getPutOnlyTableHeaderRow(List<Mutation> tableMetaData) {
         for (Mutation m : tableMetaData) {
-            if (m instanceof Put) { return m; }
+            if (m instanceof Put) { return (Put) m; }
         }
-        throw new IllegalStateException("No table header row found in table meatadata");
+        throw new IllegalStateException("No table header row found in table metadata");
+    }
+    
+    public static Put getPutOnlyAutoPartitionColumn(PTable parentTable, List<Mutation> tableMetaData) {
+        int autoPartitionPutIndex = parentTable.isMultiTenant() ? 2: 1;
+        int i=0;
+        for (Mutation m : tableMetaData) {
+            if (m instanceof Put && i++==autoPartitionPutIndex) { return (Put) m; }
+        }
+        throw new IllegalStateException("No auto partition column row found in table metadata");
     }
 
     public static Mutation getParentTableHeaderRow(List<Mutation> tableMetaData) {
@@ -272,12 +292,19 @@ public class MetaDataUtil {
         return false;
     }
     
+    public static boolean isTransactional(Mutation m, KeyValueBuilder builder, ImmutableBytesWritable ptr) {
+        if (getMutationValue(m, PhoenixDatabaseMetaData.TRANSACTIONAL_BYTES, builder, ptr)) {
+            return Boolean.TRUE.equals(PBoolean.INSTANCE.toObject(ptr));
+        }
+        return false;
+    }
+    
     public static boolean isSalted(Mutation m, KeyValueBuilder builder, ImmutableBytesWritable ptr) {
         return MetaDataUtil.getMutationValue(m, PhoenixDatabaseMetaData.SALT_BUCKETS_BYTES, builder, ptr);
     }
     
     public static byte[] getViewIndexPhysicalName(byte[] physicalTableName) {
-        return ByteUtil.concat(VIEW_INDEX_TABLE_PREFIX_BYTES, physicalTableName);
+        return getIndexPhysicalName(physicalTableName, VIEW_INDEX_TABLE_PREFIX);
     }
 
     public static String getViewIndexTableName(String tableName) {
@@ -288,30 +315,55 @@ public class MetaDataUtil {
         return schemaName;
     }
 
-    public static byte[] getLocalIndexPhysicalName(byte[] physicalTableName) {
-        return ByteUtil.concat(LOCAL_INDEX_TABLE_PREFIX_BYTES, physicalTableName);
+    public static byte[] getIndexPhysicalName(byte[] physicalTableName, String indexPrefix) {
+        return getIndexPhysicalName(Bytes.toString(physicalTableName), indexPrefix).getBytes();
     }
-    
+
+    public static String getIndexPhysicalName(String physicalTableName, String indexPrefix) {
+        if (physicalTableName.contains(QueryConstants.NAMESPACE_SEPARATOR)) {
+            String schemaName = SchemaUtil.getSchemaNameFromFullName(physicalTableName,
+                    QueryConstants.NAMESPACE_SEPARATOR);
+            String tableName = SchemaUtil.getTableNameFromFullName(physicalTableName,
+                    QueryConstants.NAMESPACE_SEPARATOR);
+            return (schemaName + QueryConstants.NAMESPACE_SEPARATOR + indexPrefix + tableName);
+        }
+        return indexPrefix + physicalTableName;
+    }
+
+    public static byte[] getLocalIndexPhysicalName(byte[] physicalTableName) {
+        return getIndexPhysicalName(physicalTableName, LOCAL_INDEX_TABLE_PREFIX);
+    }
+
     public static String getLocalIndexTableName(String tableName) {
         return LOCAL_INDEX_TABLE_PREFIX + tableName;
     }
-    
+
     public static String getLocalIndexSchemaName(String schemaName) {
         return schemaName;
     }  
 
     public static String getUserTableName(String localIndexTableName) {
-        String schemaName = SchemaUtil.getSchemaNameFromFullName(localIndexTableName);
-        if(!schemaName.isEmpty()) schemaName = schemaName.substring(LOCAL_INDEX_TABLE_PREFIX.length());
-        String tableName = localIndexTableName.substring((schemaName.isEmpty() ? 0 : (schemaName.length() + QueryConstants.NAME_SEPARATOR.length()))
-            + LOCAL_INDEX_TABLE_PREFIX.length());
-        return SchemaUtil.getTableName(schemaName, tableName);
+        if (localIndexTableName.contains(QueryConstants.NAMESPACE_SEPARATOR)) {
+            String schemaName = SchemaUtil.getSchemaNameFromFullName(localIndexTableName,
+                    QueryConstants.NAMESPACE_SEPARATOR);
+            String tableName = SchemaUtil.getTableNameFromFullName(localIndexTableName,
+                    QueryConstants.NAMESPACE_SEPARATOR);
+            String userTableName = tableName.substring(LOCAL_INDEX_TABLE_PREFIX.length());
+            return (schemaName + QueryConstants.NAMESPACE_SEPARATOR + userTableName);
+        } else {
+            String schemaName = SchemaUtil.getSchemaNameFromFullName(localIndexTableName);
+            if (!schemaName.isEmpty()) schemaName = schemaName.substring(LOCAL_INDEX_TABLE_PREFIX.length());
+            String tableName = localIndexTableName.substring(
+                    (schemaName.isEmpty() ? 0 : (schemaName.length() + QueryConstants.NAME_SEPARATOR.length()))
+                            + LOCAL_INDEX_TABLE_PREFIX.length());
+            return SchemaUtil.getTableName(schemaName, tableName);
+        }
     }
 
     public static String getViewIndexSchemaName(PName physicalName) {
         return VIEW_INDEX_SEQUENCE_PREFIX + physicalName.getString();
     }
-    
+ 
     public static SequenceKey getViewIndexSequenceKey(String tenantId, PName physicalName, int nSaltBuckets) {
         // Create global sequence of the form: <prefixed base table name><tenant id>
         // rather than tenant-specific sequence, as it makes it much easier
@@ -330,15 +382,12 @@ public class MetaDataUtil {
         return VIEW_INDEX_ID_COLUMN_NAME;
     }
 
-    public static boolean hasViewIndexTable(PhoenixConnection connection, PName name) throws SQLException {
-        return hasViewIndexTable(connection, name.getBytes());
+    public static boolean hasViewIndexTable(PhoenixConnection connection, PName physicalName) throws SQLException {
+        return hasViewIndexTable(connection, physicalName.getBytes());
     }
-    
-    public static boolean hasViewIndexTable(PhoenixConnection connection, String schemaName, String tableName) throws SQLException {
-        return hasViewIndexTable(connection, SchemaUtil.getTableNameAsBytes(schemaName, tableName));
-    }
-    
-    public static boolean hasViewIndexTable(PhoenixConnection connection, byte[] physicalTableName) throws SQLException {
+
+    public static boolean hasViewIndexTable(PhoenixConnection connection, byte[] physicalTableName)
+            throws SQLException {
         byte[] physicalIndexName = MetaDataUtil.getViewIndexPhysicalName(physicalTableName);
         try {
             HTableDescriptor desc = connection.getQueryServices().getTableDescriptor(physicalIndexName);
@@ -348,12 +397,8 @@ public class MetaDataUtil {
         }
     }
 
-    public static boolean hasLocalIndexTable(PhoenixConnection connection, PName name) throws SQLException {
-        return hasLocalIndexTable(connection, name.getBytes());
-    }
-
-    public static boolean hasLocalIndexTable(PhoenixConnection connection, String schemaName, String tableName) throws SQLException {
-        return hasLocalIndexTable(connection, SchemaUtil.getTableNameAsBytes(schemaName, tableName));
+    public static boolean hasLocalIndexTable(PhoenixConnection connection, PName physicalName) throws SQLException {
+        return hasLocalIndexTable(connection, physicalName.getBytes());
     }
 
     public static boolean hasLocalIndexTable(PhoenixConnection connection, byte[] physicalTableName) throws SQLException {
@@ -368,7 +413,7 @@ public class MetaDataUtil {
 
     public static void deleteViewIndexSequences(PhoenixConnection connection, PName name) throws SQLException {
         String schemaName = getViewIndexSchemaName(name);
-        connection.createStatement().executeUpdate("DELETE FROM " + PhoenixDatabaseMetaData.SEQUENCE_FULLNAME_ESCAPED + 
+        connection.createStatement().executeUpdate("DELETE FROM " + PhoenixDatabaseMetaData.SYSTEM_SEQUENCE + 
                 " WHERE " + PhoenixDatabaseMetaData.TENANT_ID + " IS NULL AND " + 
                 PhoenixDatabaseMetaData.SEQUENCE_SCHEMA + " = '" + schemaName + "'");
         
@@ -429,26 +474,85 @@ public class MetaDataUtil {
     public static final String IS_LOCAL_INDEX_TABLE_PROP_NAME = "IS_LOCAL_INDEX_TABLE";
     public static final byte[] IS_LOCAL_INDEX_TABLE_PROP_BYTES = Bytes.toBytes(IS_LOCAL_INDEX_TABLE_PROP_NAME);
 
-    public static Scan newTableRowsScan(byte[] key, long startTimeStamp, long stopTimeStamp)
-            throws IOException {
-        Scan scan = new Scan();
-        scan.setTimeRange(startTimeStamp, stopTimeStamp);
-        scan.setStartRow(key);
-        byte[] stopKey = ByteUtil.concat(key, QueryConstants.SEPARATOR_BYTE_ARRAY);
-        ByteUtil.nextKey(stopKey, stopKey.length);
-        scan.setStopRow(stopKey);
-        return scan;
+    private static final String GET_VIEWS_QUERY = "SELECT " + TABLE_SCHEM + "," + TABLE_NAME + " FROM "
+            + SYSTEM_CATALOG_SCHEMA + "." + SYSTEM_CATALOG_TABLE + " WHERE " + COLUMN_FAMILY + " = ? AND " + LINK_TYPE
+            + " = " + LinkType.PHYSICAL_TABLE.getSerializedValue();
+
+    public static Scan newTableRowsScan(byte[] key, long startTimeStamp, long stopTimeStamp){
+        return newTableRowsScan(key, null, startTimeStamp, stopTimeStamp);
     }
-    
+
+	public static Scan newTableRowsScan(byte[] startKey, byte[] stopKey, long startTimeStamp, long stopTimeStamp) {
+		Scan scan = new Scan();
+		ScanUtil.setTimeRange(scan, startTimeStamp, stopTimeStamp);
+		scan.setStartRow(startKey);
+		if (stopKey == null) {
+			stopKey = ByteUtil.concat(startKey, QueryConstants.SEPARATOR_BYTE_ARRAY);
+			ByteUtil.nextKey(stopKey, stopKey.length);
+		}
+		scan.setStopRow(stopKey);
+		return scan;
+	}
+
     public static LinkType getLinkType(Mutation tableMutation) {
         List<Cell> kvs = tableMutation.getFamilyCellMap().get(PhoenixDatabaseMetaData.TABLE_FAMILY_BYTES);
         if (kvs != null) {
             for (Cell kv : kvs) {
-                if (Bytes.compareTo(kv.getQualifierArray(), kv.getQualifierOffset(), kv.getQualifierLength(), PhoenixDatabaseMetaData.LINK_TYPE_BYTES, 0, PhoenixDatabaseMetaData.LINK_TYPE_BYTES.length) == 0) {
-                    return LinkType.fromSerializedValue(PUnsignedTinyint.INSTANCE.getCodec().decodeByte(kv.getValueArray(), kv.getValueOffset(), SortOrder.getDefault()));
-                }
+                if (Bytes.compareTo(kv.getQualifierArray(), kv.getQualifierOffset(), kv.getQualifierLength(),
+                        PhoenixDatabaseMetaData.LINK_TYPE_BYTES, 0,
+                        PhoenixDatabaseMetaData.LINK_TYPE_BYTES.length) == 0) { return LinkType
+                                .fromSerializedValue(PUnsignedTinyint.INSTANCE.getCodec().decodeByte(kv.getValueArray(),
+                                        kv.getValueOffset(), SortOrder.getDefault())); }
             }
         }
         return null;
+    }
+
+    public static boolean isLocalIndex(String physicalName) {
+        if (physicalName.contains(LOCAL_INDEX_TABLE_PREFIX)) { return true; }
+        return false;
+    }
+
+    public static boolean isViewIndex(String physicalName) {
+        if (physicalName.contains(QueryConstants.NAMESPACE_SEPARATOR)) {
+            return SchemaUtil.getTableNameFromFullName(physicalName).startsWith(VIEW_INDEX_TABLE_PREFIX);
+        } else {
+            return physicalName.startsWith(VIEW_INDEX_TABLE_PREFIX);
+        }
+    }
+
+    public static Set<String> getViewNames(PhoenixConnection conn, String table) throws SQLException {
+        Set<String> viewNames = new HashSet<String>();
+        PreparedStatement preparedStatment = conn.prepareStatement(GET_VIEWS_QUERY);
+        preparedStatment.setString(1, SchemaUtil.normalizeIdentifier(table));
+        ResultSet rs = preparedStatment.executeQuery();
+        while (rs.next()) {
+            viewNames.add(SchemaUtil.getTableName(rs.getString(1), rs.getString(2)));
+        }
+        return viewNames;
+    }
+
+    public static String getAutoPartitionColumnName(PTable parentTable) {
+        List<PColumn> parentTableColumns = parentTable.getColumns();
+        PColumn column = parentTableColumns.get(getAutoPartitionColIndex(parentTable));
+        return column.getName().getString();
+    }
+
+    // this method should only be called on the parent table (since it has the _SALT column)
+    public static int getAutoPartitionColIndex(PTable parentTable) {
+        boolean isMultiTenant = parentTable.isMultiTenant();
+        boolean isSalted = parentTable.getBucketNum()!=null;
+        return (isMultiTenant && isSalted) ? 2 : (isMultiTenant || isSalted) ? 1 : 0;
+    }
+
+    public static String getJdbcUrl(RegionCoprocessorEnvironment env) {
+        String zkQuorum = env.getConfiguration().get(HConstants.ZOOKEEPER_QUORUM);
+        String zkClientPort = env.getConfiguration().get(HConstants.ZOOKEEPER_CLIENT_PORT,
+            Integer.toString(HConstants.DEFAULT_ZOOKEPER_CLIENT_PORT));
+        String zkParentNode = env.getConfiguration().get(HConstants.ZOOKEEPER_ZNODE_PARENT,
+            HConstants.DEFAULT_ZOOKEEPER_ZNODE_PARENT);
+        return PhoenixRuntime.JDBC_PROTOCOL + PhoenixRuntime.JDBC_PROTOCOL_SEPARATOR + zkQuorum
+            + PhoenixRuntime.JDBC_PROTOCOL_SEPARATOR + zkClientPort
+            + PhoenixRuntime.JDBC_PROTOCOL_SEPARATOR + zkParentNode;
     }
 }

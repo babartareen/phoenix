@@ -129,6 +129,14 @@ public class AggregateResultScannerTest extends BaseConnectionlessQueryTest {
             public String getExpressionStr() {
                 return null;
             }
+            @Override
+            public boolean isRowTimestamp() {
+                return false;
+            }
+			@Override
+			public boolean isDynamic() {
+				return false;
+			}
         })), null);
         aggregationManager.setAggregators(new ClientAggregators(Collections.<SingleAggregateFunction>singletonList(func), 1));
         ResultIterators iterators = new ResultIterators() {

@@ -23,6 +23,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -47,6 +48,7 @@ import org.apache.phoenix.iterate.ParallelScanGrouper;
 import org.apache.phoenix.iterate.ResultIterator;
 import org.apache.phoenix.jdbc.PhoenixParameterMetaData;
 import org.apache.phoenix.jdbc.PhoenixStatement;
+import org.apache.phoenix.jdbc.PhoenixStatement.Operation;
 import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.parse.LiteralParseNode;
 import org.apache.phoenix.parse.ParseNodeFactory;
@@ -78,7 +80,7 @@ public class ListJarsQueryPlan implements QueryPlan {
         PColumn column =
                 new PColumnImpl(PNameFactory.newName("jar_location"), null,
                         PVarchar.INSTANCE, null, null, false, 0, SortOrder.getDefault(), 0, null,
-                        false, null);
+                        false, null, false, false);
         List<PColumn> columns = new ArrayList<PColumn>();
         columns.add(column);
         Expression expression =
@@ -114,6 +116,10 @@ public class ListJarsQueryPlan implements QueryPlan {
         return iterator(DefaultParallelScanGrouper.getInstance());
     }
 
+    @Override
+    public ResultIterator iterator(ParallelScanGrouper scanGrouper, Scan s) throws SQLException {
+        return iterator(scanGrouper);
+    }
     @Override
     public ResultIterator iterator(ParallelScanGrouper scanGrouper) throws SQLException {
         return new ResultIterator() {
@@ -192,6 +198,11 @@ public class ListJarsQueryPlan implements QueryPlan {
     }
 
     @Override
+    public Integer getOffset() {
+        return null;
+    }
+
+    @Override
     public OrderBy getOrderBy() {
         return OrderBy.EMPTY_ORDER_BY;
     }
@@ -230,4 +241,14 @@ public class ListJarsQueryPlan implements QueryPlan {
     public boolean useRoundRobinIterator() {
         return false;
     }
+
+	@Override
+	public Set<TableRef> getSourceRefs() {
+		return Collections.<TableRef>emptySet();
+	}
+
+	@Override
+	public Operation getOperation() {
+		return stmt.getUpdateOperation();
+	}
 }

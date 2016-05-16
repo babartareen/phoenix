@@ -24,15 +24,20 @@ import org.apache.phoenix.pherf.result.impl.CSVFileResultHandler;
 import org.apache.phoenix.pherf.result.impl.ImageResultHandler;
 import org.apache.phoenix.pherf.result.impl.XMLResultHandler;
 import org.apache.phoenix.util.InstanceResolver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class ResultManager {
+    private static final Logger logger = LoggerFactory.getLogger(ResultManager.class);
+
     private final List<ResultHandler> resultHandlers;
     private final ResultUtil util;
     private static final List<ResultHandler> defaultHandlers;
-
+    private static final List<ResultHandler> minimalHandlers;
+    
     static {
         defaultHandlers = new ArrayList<>();
         XMLResultHandler xmlResultHandler = new XMLResultHandler();
@@ -51,9 +56,23 @@ public class ResultManager {
         handlerDet.setResultFileDetails(ResultFileDetails.CSV_DETAILED_PERFORMANCE);
         defaultHandlers.add(handlerDet);
     }
+    
+    static {
+    	minimalHandlers = new ArrayList<>();
+        ImageResultHandler imageResultHandler = new ImageResultHandler();
+        imageResultHandler.setResultFileDetails(ResultFileDetails.IMAGE);
+        minimalHandlers.add(imageResultHandler);
+    }
 
     public ResultManager(String fileNameSeed) {
-        this(fileNameSeed, InstanceResolver.get(ResultHandler.class, defaultHandlers));
+        this(fileNameSeed, true);
+    }
+    
+    @SuppressWarnings("unchecked")
+	public ResultManager(String fileNameSeed, boolean writeRuntimeResults) {
+        this(fileNameSeed, writeRuntimeResults ?
+        		InstanceResolver.get(ResultHandler.class, defaultHandlers) :
+        		InstanceResolver.get(ResultHandler.class, minimalHandlers));
     }
 
     public ResultManager(String fileNameSeed, List<ResultHandler> resultHandlers) {
@@ -115,6 +134,22 @@ public class ResultManager {
             if (detailsCSVWriter != null) {
                 detailsCSVWriter.flush();
                 detailsCSVWriter.close();
+            }
+        }
+    }
+
+    /**
+     * Allows for flushing all the {@link org.apache.phoenix.pherf.result.ResultHandler}
+     * @throws Exception
+     */
+    public synchronized void flush(){
+        for (ResultHandler handler : resultHandlers) {
+            try {
+                handler.flush();
+            } catch (Exception e) {
+                e.printStackTrace();
+                logger.warn("Could not flush handler: "
+                        + handler.getResultFileName() + " : " + e.getMessage());
             }
         }
     }

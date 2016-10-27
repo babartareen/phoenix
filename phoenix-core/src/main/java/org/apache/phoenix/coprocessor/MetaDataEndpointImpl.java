@@ -20,6 +20,7 @@ package org.apache.phoenix.coprocessor;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static org.apache.hadoop.hbase.KeyValueUtil.createFirstOnRow;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.APPEND_ONLY_SCHEMA_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.ARRAY_SIZE_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.AUTO_PARTITION_SEQ_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.CLASS_NAME_BYTES;
@@ -91,10 +92,12 @@ import java.util.List;
 import java.util.NavigableMap;
 import java.util.Properties;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.Coprocessor;
 import org.apache.hadoop.hbase.CoprocessorEnvironment;
+import org.apache.hadoop.hbase.DoNotRetryIOException;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValue.Type;
@@ -110,7 +113,6 @@ import org.apache.hadoop.hbase.coprocessor.CoprocessorException;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorService;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
-import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FilterList;
 import org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter;
 import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
@@ -158,7 +160,6 @@ import org.apache.phoenix.expression.visitor.StatelessTraverseAllExpressionVisit
 import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
 import org.apache.phoenix.hbase.index.util.GenericKeyValueBuilder;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
-import org.apache.phoenix.hbase.index.util.IndexManagementUtil;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.jdbc.PhoenixConnection;
@@ -196,8 +197,6 @@ import org.apache.phoenix.schema.SequenceNotFoundException;
 import org.apache.phoenix.schema.SortOrder;
 import org.apache.phoenix.schema.TableNotFoundException;
 import org.apache.phoenix.schema.TableRef;
-import org.apache.phoenix.schema.stats.PTableStats;
-import org.apache.phoenix.schema.stats.StatisticsUtil;
 import org.apache.phoenix.schema.tuple.ResultTuple;
 import org.apache.phoenix.schema.types.PBinary;
 import org.apache.phoenix.schema.types.PBoolean;
@@ -215,6 +214,7 @@ import org.apache.phoenix.util.KeyValueUtil;
 import org.apache.phoenix.util.MetaDataUtil;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.QueryUtil;
+import org.apache.phoenix.util.ReadOnlyProps;
 import org.apache.phoenix.util.SchemaUtil;
 import org.apache.phoenix.util.ServerUtil;
 import org.apache.phoenix.util.UpgradeUtil;
@@ -277,6 +277,7 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
     private static final KeyValue IS_NAMESPACE_MAPPED_KV = createFirstOnRow(ByteUtil.EMPTY_BYTE_ARRAY,
             TABLE_FAMILY_BYTES, IS_NAMESPACE_MAPPED_BYTES);
     private static final KeyValue AUTO_PARTITION_SEQ_KV = createFirstOnRow(ByteUtil.EMPTY_BYTE_ARRAY, TABLE_FAMILY_BYTES, AUTO_PARTITION_SEQ_BYTES);
+    private static final KeyValue APPEND_ONLY_SCHEMA_KV = createFirstOnRow(ByteUtil.EMPTY_BYTE_ARRAY, TABLE_FAMILY_BYTES, APPEND_ONLY_SCHEMA_BYTES);
     
     private static final List<KeyValue> TABLE_KV_COLUMNS = Arrays.<KeyValue>asList(
             EMPTY_KEYVALUE_KV,
@@ -302,7 +303,8 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
             TRANSACTIONAL_KV,
             UPDATE_CACHE_FREQUENCY_KV,
             IS_NAMESPACE_MAPPED_KV,
-            AUTO_PARTITION_SEQ_KV
+            AUTO_PARTITION_SEQ_KV,
+            APPEND_ONLY_SCHEMA_KV
             );
     static {
         Collections.sort(TABLE_KV_COLUMNS, KeyValue.COMPARATOR);
@@ -331,6 +333,7 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
     private static final int INDEX_DISABLE_TIMESTAMP = TABLE_KV_COLUMNS.indexOf(INDEX_DISABLE_TIMESTAMP_KV);
     private static final int IS_NAMESPACE_MAPPED_INDEX = TABLE_KV_COLUMNS.indexOf(IS_NAMESPACE_MAPPED_KV);
     private static final int AUTO_PARTITION_SEQ_INDEX = TABLE_KV_COLUMNS.indexOf(AUTO_PARTITION_SEQ_KV);
+    private static final int APPEND_ONLY_SCHEMA_INDEX = TABLE_KV_COLUMNS.indexOf(APPEND_ONLY_SCHEMA_KV);
 
     // KeyValues for Column
     private static final KeyValue DECIMAL_DIGITS_KV = createFirstOnRow(ByteUtil.EMPTY_BYTE_ARRAY, TABLE_FAMILY_BYTES, DECIMAL_DIGITS_BYTES);
@@ -914,6 +917,11 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
         Cell autoPartitionSeqKv = tableKeyValues[AUTO_PARTITION_SEQ_INDEX];
         String autoPartitionSeq = autoPartitionSeqKv != null ? (String) PVarchar.INSTANCE.toObject(autoPartitionSeqKv.getValueArray(), autoPartitionSeqKv.getValueOffset(),
             autoPartitionSeqKv.getValueLength()) : null;
+        Cell isAppendOnlySchemaKv = tableKeyValues[APPEND_ONLY_SCHEMA_INDEX];
+        boolean isAppendOnlySchema = isAppendOnlySchemaKv == null ? false
+                : Boolean.TRUE.equals(PBoolean.INSTANCE.toObject(isAppendOnlySchemaKv.getValueArray(),
+                    isAppendOnlySchemaKv.getValueOffset(), isAppendOnlySchemaKv.getValueLength()));
+        
         
         List<PColumn> columns = Lists.newArrayListWithExpectedSize(columnCount);
         List<PTable> indexes = new ArrayList<PTable>();
@@ -940,31 +948,14 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
               addColumnToTable(results, colName, famName, colKeyValues, columns, saltBucketNum != null);
           }
         }
-        PName physicalTableName = physicalTables.isEmpty() ? PNameFactory.newName(SchemaUtil.getPhysicalTableName(
-                Bytes.toBytes(SchemaUtil.getTableName(schemaName.getBytes(), tableName.getBytes())), isNamespaceMapped)
-                .getNameAsString()) : physicalTables.get(0);
-        PTableStats stats = PTableStats.EMPTY_STATS;
-        if (tenantId == null) {
-            HTableInterface statsHTable = null;
-            try {
-                statsHTable = ServerUtil.getHTableForCoprocessorScan(env,
-                        SchemaUtil.getPhysicalTableName(PhoenixDatabaseMetaData.SYSTEM_STATS_NAME_BYTES, env.getConfiguration())
-                                .getName());
-                stats = StatisticsUtil.readStatistics(statsHTable, physicalTableName.getBytes(), clientTimeStamp);
-                timeStamp = Math.max(timeStamp, stats.getTimestamp());
-            } catch (org.apache.hadoop.hbase.TableNotFoundException e) {
-                logger.warn(SchemaUtil.getPhysicalTableName(PhoenixDatabaseMetaData.SYSTEM_STATS_NAME_BYTES,
-                        env.getConfiguration()) + " not online yet?");
-            } finally {
-                if (statsHTable != null) statsHTable.close();
-            }
-        }
+        // Avoid querying the stats table because we're holding the rowLock here. Issuing an RPC to a remote
+        // server while holding this lock is a bad idea and likely to cause contention.
         return PTableImpl.makePTable(tenantId, schemaName, tableName, tableType, indexState, timeStamp, tableSeqNum,
                 pkName, saltBucketNum, columns, tableType == INDEX ? schemaName : null,
                 tableType == INDEX ? dataTableName : null, indexes, isImmutableRows, physicalTables, defaultFamilyName,
                 viewStatement, disableWAL, multiTenant, storeNulls, viewType, viewIndexId, indexType,
-                rowKeyOrderOptimizable, transactional, updateCacheFrequency, stats, baseColumnCount,
-                indexDisableTimestamp, isNamespaceMapped, autoPartitionSeq);
+                rowKeyOrderOptimizable, transactional, updateCacheFrequency, baseColumnCount,
+                indexDisableTimestamp, isNamespaceMapped, autoPartitionSeq, isAppendOnlySchema);
     }
 
     private PSchema getSchema(RegionScanner scanner, long clientTimeStamp) throws IOException, SQLException {
@@ -1441,8 +1432,8 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
                     props.setProperty(PhoenixRuntime.NO_UPGRADE_ATTRIB, Boolean.TRUE.toString());
                     try (PhoenixConnection connection = DriverManager.getConnection(MetaDataUtil.getJdbcUrl(env), props).unwrap(PhoenixConnection.class);
                             Statement stmt = connection.createStatement()) {
-                        String seqNextValueSql = String.format("SELECT NEXT VALUE FOR %s FROM %s LIMIT 1",
-                            SchemaUtil.getTableName(parentTable.getSchemaName().getString(), parentTable.getAutoPartitionSeqName()), PhoenixDatabaseMetaData.SYSTEM_CATALOG_NAME);
+                        String seqName = parentTable.getAutoPartitionSeqName();
+                        String seqNextValueSql = String.format("SELECT NEXT VALUE FOR %s", seqName);
                         ResultSet rs = stmt.executeQuery(seqNextValueSql);
                         rs.next();
                         autoPartitionNum = rs.getLong(1);
@@ -1453,7 +1444,7 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
                         done.run(builder.build());
                         return;
                     }
-                    PColumn autoPartitionCol = parentTable.getColumns().get(MetaDataUtil.getAutoPartitionColIndex(parentTable));
+                    PColumn autoPartitionCol = parentTable.getPKColumns().get(MetaDataUtil.getAutoPartitionColIndex(parentTable));
                     if (!PLong.INSTANCE.isCoercibleTo(autoPartitionCol.getDataType(), autoPartitionNum)) {
                         builder.setReturnCode(MetaDataProtos.MutationCode.CANNOT_COERCE_AUTO_PARTITION_ID);
                         builder.setMutationTime(EnvironmentEdgeManager.currentTimeMillis());
@@ -1490,9 +1481,9 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
                     familyCellMap = autoPartitionPut.getFamilyCellMap();
                     cells = familyCellMap.get(TABLE_FAMILY_BYTES);
                     cell = cells.get(0);
-                    byte[] bytes = new byte [Bytes.SIZEOF_LONG + 1];
                     PDataType dataType = autoPartitionCol.getDataType();
                     Object val = dataType.toObject(autoPartitionNum, PLong.INSTANCE);
+                    byte[] bytes = new byte [dataType.getByteSize() + 1];
                     dataType.toBytes(val, bytes, 0);
                     Cell viewConstantCell = new KeyValue(cell.getRow(), cell.getFamily(), VIEW_CONSTANT_BYTES,
                         cell.getTimestamp(), Type.codeToType(cell.getTypeByte()), bytes);
@@ -1562,14 +1553,18 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
             scan.setStopRow(stopRow);
         }
         SingleColumnValueFilter linkFilter = new SingleColumnValueFilter(TABLE_FAMILY_BYTES, LINK_TYPE_BYTES, CompareOp.EQUAL, linkTypeBytes);
+        SingleColumnValueFilter tableTypeFilter = new SingleColumnValueFilter(TABLE_FAMILY_BYTES, TABLE_TYPE_BYTES,
+                CompareOp.EQUAL, PTableType.VIEW.getSerializedValue().getBytes());
+        tableTypeFilter.setFilterIfMissing(false);
         linkFilter.setFilterIfMissing(true);
         byte[] suffix = ByteUtil.concat(QueryConstants.SEPARATOR_BYTE_ARRAY, SchemaUtil
                 .getPhysicalTableName(SchemaUtil.getTableNameAsBytes(schemaName, tableName), table.isNamespaceMapped())
                 .getName());
         SuffixFilter rowFilter = new SuffixFilter(suffix);
-        Filter filter = new FilterList(linkFilter, rowFilter);
+        FilterList filter = new FilterList(linkFilter,tableTypeFilter,rowFilter);
         scan.setFilter(filter);
         scan.addColumn(TABLE_FAMILY_BYTES, LINK_TYPE_BYTES);
+        scan.addColumn(TABLE_FAMILY_BYTES, TABLE_TYPE_BYTES);
         scan.addColumn(TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         
         // Original region-only scanner modified due to PHOENIX-1208
@@ -1597,7 +1592,7 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
                     }
                     results.add(result);
                 }
-                TableViewFinderResult tableViewFinderResult = new TableViewFinderResult(results);
+                TableViewFinderResult tableViewFinderResult = new TableViewFinderResult(results, table);
                 if (numOfChildViews > 0 && !allViewsInCurrentRegion) {
                     tableViewFinderResult.setAllViewsNotInSingleRegion();
                 }
@@ -3121,7 +3116,7 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
                 invalidateList.add(new ImmutableBytesPtr(indexKey));
             }
             // If the dropped column is a covered index column, invalidate the index
-            else if (indexMaintainer.getCoverededColumns().contains(
+            else if (indexMaintainer.getCoveredColumns().contains(
                 new ColumnReference(columnToDelete.getFamilyName().getBytes(), columnToDelete
                         .getName().getBytes()))) {
                 invalidateList.add(new ImmutableBytesPtr(indexKey));
@@ -3143,19 +3138,23 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
     }
 
     @Override
-    public void getVersion(RpcController controller, GetVersionRequest request,
-            RpcCallback<GetVersionResponse> done) {
+    public void getVersion(RpcController controller, GetVersionRequest request, RpcCallback<GetVersionResponse> done) {
 
         GetVersionResponse.Builder builder = GetVersionResponse.newBuilder();
-        // The first 3 bytes of the long is used to encoding the HBase version as major.minor.patch.
-        // The next 4 bytes of the value is used to encode the Phoenix version as major.minor.patch.
-        long version = MetaDataUtil.encodeHBaseAndPhoenixVersions(this.env.getHBaseVersion());
-
-        // The last byte is used to communicate whether or not mutable secondary indexing
-        // was configured properly.
-        version =
-                MetaDataUtil.encodeHasIndexWALCodec(version,
-                    IndexManagementUtil.isWALEditCodecSet(this.env.getConfiguration()));
+        Configuration config = env.getConfiguration();
+        boolean isTablesMappingEnabled = SchemaUtil.isNamespaceMappingEnabled(PTableType.TABLE,
+                new ReadOnlyProps(config.iterator()));
+        if (isTablesMappingEnabled
+                && PhoenixDatabaseMetaData.MIN_NAMESPACE_MAPPED_PHOENIX_VERSION > request.getClientVersion()) {
+            logger.error("Old client is not compatible when" + " system tables are upgraded to map to namespace");
+            ProtobufUtil.setControllerException(controller,
+                    ServerUtil.createIOException(
+                            SchemaUtil.getPhysicalHBaseTableName(PhoenixDatabaseMetaData.SYSTEM_CATALOG_NAME,
+                                    isTablesMappingEnabled, PTableType.SYSTEM).getString(),
+                    new DoNotRetryIOException(
+                            "Old client is not compatible when" + " system tables are upgraded to map to namespace")));
+        }
+        long version = MetaDataUtil.encodeVersion(env.getHBaseVersion(), config);
 
         builder.setVersion(version);
         done.run(builder.build());
@@ -3362,13 +3361,21 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
 
         private List<Result> results = Lists.newArrayList();
         private boolean allViewsNotInSingleRegion = false;
+        private PTable table;
 
-        private TableViewFinderResult(List<Result> results) {
+        private TableViewFinderResult(List<Result> results, PTable table) {
             this.results = results;
+            this.table = table;
         }
 
         public boolean hasViews() {
-            return results.size() > 0;
+            int localIndexesCount = 0;
+            for(PTable index : table.getIndexes()) {
+                if(index.getIndexType().equals(IndexType.LOCAL)) {
+                    localIndexesCount++;
+                }
+            }
+            return results.size()-localIndexesCount > 0;
         }
 
         private void setAllViewsNotInSingleRegion() {

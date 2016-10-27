@@ -53,6 +53,7 @@ import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
 import org.apache.phoenix.execute.DescVarLengthFastByteComparisons;
 import org.apache.phoenix.filter.BooleanExpressionFilter;
+import org.apache.phoenix.filter.DistinctPrefixFilter;
 import org.apache.phoenix.filter.SkipScanFilter;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.KeyRange;
@@ -678,7 +679,7 @@ public class ScanUtil {
          }
     }
 
-    public static boolean isConextScan(Scan scan, StatementContext context) {
+    public static boolean isContextScan(Scan scan, StatementContext context) {
         return Bytes.compareTo(context.getScan().getStartRow(), scan.getStartRow()) == 0 && Bytes
                 .compareTo(context.getScan().getStopRow(), scan.getStopRow()) == 0;
     }
@@ -693,6 +694,9 @@ public class ScanUtil {
         } else if (filter instanceof SkipScanFilter) {
             SkipScanFilter skipScanFilter = (SkipScanFilter)filter;
             skipScanFilter.setOffset(offset);
+        } else if (filter instanceof DistinctPrefixFilter) {
+            DistinctPrefixFilter prefixFilter = (DistinctPrefixFilter) filter;
+            prefixFilter.setOffset(offset);
         }
     }
 
@@ -766,16 +770,16 @@ public class ScanUtil {
         return Bytes.compareTo(key, 0, nBytesToCheck, ZERO_BYTE_ARRAY, 0, nBytesToCheck) != 0;
     }
 
-    public static byte[] getTenantIdBytes(RowKeySchema schema, boolean isSalted, PName tenantId, boolean isMultiTenantTable)
+    public static byte[] getTenantIdBytes(RowKeySchema schema, boolean isSalted, PName tenantId, boolean isMultiTenantTable, boolean isSharedIndex)
             throws SQLException {
         return isMultiTenantTable ?
-                  getTenantIdBytes(schema, isSalted, tenantId)
+                  getTenantIdBytes(schema, isSalted, tenantId, isSharedIndex)
                 : tenantId.getBytes();
     }
 
-    public static byte[] getTenantIdBytes(RowKeySchema schema, boolean isSalted, PName tenantId)
+    public static byte[] getTenantIdBytes(RowKeySchema schema, boolean isSalted, PName tenantId, boolean isSharedIndex)
             throws SQLException {
-        int pkPos = isSalted ? 1 : 0;
+        int pkPos = (isSalted ? 1 : 0) + (isSharedIndex ? 1 : 0); 
         Field field = schema.getField(pkPos);
         PDataType dataType = field.getDataType();
         byte[] convertedValue;
@@ -876,12 +880,15 @@ public class ScanUtil {
     
     public static final boolean canQueryBeExecutedSerially(PTable table, OrderBy orderBy, StatementContext context) {
         /*
-         * For salted or local index tables, if rows are requested in a row key order, then we
-         * cannot execute a query serially. We need to be able to do a merge sort across all scans
-         * which isn't possible with SerialIterators. For other kinds of tables though we are ok
-         * since SerialIterators execute scans in the correct order.
+         * If ordering by columns not on the PK axis, we can't execute a query serially because we
+         * need to do a merge sort across all the scans which isn't possible with SerialIterators.
+         * Similar reasoning follows for salted and local index tables when ordering rows in a row
+         * key order. Serial execution is OK in other cases since SerialIterators will execute scans
+         * in the correct order.
          */
-        if ((table.getBucketNum() != null || table.getIndexType() == IndexType.LOCAL) && shouldRowsBeInRowKeyOrder(orderBy, context)) {
+        if (!orderBy.getOrderByExpressions().isEmpty()
+                || ((table.getBucketNum() != null || table.getIndexType() == IndexType.LOCAL) && shouldRowsBeInRowKeyOrder(
+                    orderBy, context))) {
             return false;
         }
         return true;

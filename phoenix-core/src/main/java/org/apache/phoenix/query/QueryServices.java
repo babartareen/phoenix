@@ -51,8 +51,8 @@ public interface QueryServices extends SQLCloseable {
     // consistency configuration setting
     public static final String CONSISTENCY_ATTRIB = "phoenix.connection.consistency";
     public static final String SCHEMA_ATTRIB = "phoenix.connection.schema";
-    public static final String IS_NAMESPACE_MAPPING_ENABLED  = "phoenix.connection.isNamespaceMappingEnabled";
-    public static final String IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE  = "phoenix.connection.mapSystemTablesToNamespace";
+    public static final String IS_NAMESPACE_MAPPING_ENABLED  = "phoenix.schema.isNamespaceMappingEnabled";
+    public static final String IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE  = "phoenix.schema.mapSystemTablesToNamespace";
     // joni byte regex engine setting
     public static final String USE_BYTE_BASED_REGEX_ATTRIB = "phoenix.regex.byteBased";
     public static final String DRIVER_SHUTDOWN_TIMEOUT_MS = "phoenix.shutdown.timeoutMs";
@@ -108,7 +108,7 @@ public interface QueryServices extends SQLCloseable {
     public static final String REGIONSERVER_LEASE_PERIOD_ATTRIB = "hbase.regionserver.lease.period";
     public static final String RPC_TIMEOUT_ATTRIB = "hbase.rpc.timeout";
     public static final String DYNAMIC_JARS_DIR_KEY = "hbase.dynamic.jars.dir";
-    public static final String ZOOKEEPER_QUARUM_ATTRIB = "hbase.zookeeper.quorum";
+    public static final String ZOOKEEPER_QUORUM_ATTRIB = "hbase.zookeeper.quorum";
     public static final String ZOOKEEPER_PORT_ATTRIB = "hbase.zookeeper.property.clientPort";
     public static final String ZOOKEEPER_ROOT_NODE_ATTRIB = "zookeeper.znode.parent";
     public static final String DISTINCT_VALUE_COMPRESS_THRESHOLD_ATTRIB = "phoenix.distinct.value.compress.threshold";
@@ -161,6 +161,8 @@ public interface QueryServices extends SQLCloseable {
     public static final String RUN_UPDATE_STATS_ASYNC = "phoenix.update.stats.command.async";
     public static final String STATS_SERVER_POOL_SIZE = "phoenix.stats.pool.size";
     public static final String COMMIT_STATS_ASYNC = "phoenix.stats.commit.async";
+    // Maximum size in bytes taken up by cached table stats in the client
+    public static final String STATS_MAX_CACHE_SIZE = "phoenix.stats.cache.maxSize";
 
     public static final String SEQUENCE_SALT_BUCKETS_ATTRIB = "phoenix.sequence.saltBuckets";
     public static final String COPROCESSOR_PRIORITY_ATTRIB = "phoenix.coprocessor.priority";
@@ -212,10 +214,12 @@ public interface QueryServices extends SQLCloseable {
     public static final String HCONNECTION_POOL_CORE_SIZE = "hbase.hconnection.threads.core";
     public static final String HCONNECTION_POOL_MAX_SIZE = "hbase.hconnection.threads.max";
     public static final String HTABLE_MAX_THREADS = "hbase.htable.threads.max";
-
     // time to wait before running second index population upsert select (so that any pending batches of rows on region server are also written to index)
     public static final String INDEX_POPULATION_SLEEP_TIME = "phoenix.index.population.wait.time";
+    public static final String LOCAL_INDEX_CLIENT_UPGRADE_ATTRIB = "phoenix.client.localIndexUpgrade";
+    public static final String LIMITED_QUERY_SERIAL_THRESHOLD = "phoenix.limited.query.serial.threshold";
 
+    public static final String INDEX_ASYNC_BUILD_ENABLED = "phoenix.index.async.build.enabled";
     /**
      * Get executor service used for parallel scans
      */

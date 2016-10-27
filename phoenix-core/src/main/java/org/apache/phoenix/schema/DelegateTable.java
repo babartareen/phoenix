@@ -24,7 +24,6 @@ import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.jdbc.PhoenixConnection;
-import org.apache.phoenix.schema.stats.PTableStats;
 
 public class DelegateTable implements PTable {
     @Override
@@ -232,11 +231,6 @@ public class DelegateTable implements PTable {
         return delegate.getIndexType();
     }
 
-    @Override
-    public PTableStats getTableStats() {
-        return delegate.getTableStats();
-    }
-
     private final PTable delegate;
 
     public DelegateTable(PTable delegate) {
@@ -283,7 +277,13 @@ public class DelegateTable implements PTable {
         return delegate.isNamespaceMapped();
     }
 
+    @Override
     public String getAutoPartitionSeqName() {
         return delegate.getAutoPartitionSeqName();
+    }
+    
+    @Override
+    public boolean isAppendOnlySchema() {
+        return delegate.isAppendOnlySchema();
     }
 }

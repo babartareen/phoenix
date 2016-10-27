@@ -64,7 +64,7 @@ public class AutoPartitionViewsIT extends BaseHBaseManagedTimeIT {
 
     public AutoPartitionViewsIT(boolean salted, boolean isMultiTenant) {
         this.isMultiTenant = isMultiTenant;
-        StringBuilder optionBuilder = new StringBuilder(" AUTO_PARTITION_SEQ=metric_id_seq");
+        StringBuilder optionBuilder = new StringBuilder(" AUTO_PARTITION_SEQ=\"TSDB.METRIC_ID_SEQ\"");
         if (salted) optionBuilder.append(", SALTED=4 ");
         if (isMultiTenant) optionBuilder.append(", MULTI_TENANT=true ");
         this.tableDDLOptions = optionBuilder.toString();
@@ -111,7 +111,7 @@ public class AutoPartitionViewsIT extends BaseHBaseManagedTimeIT {
             }
 
             conn.createStatement().execute(
-                "CREATE SEQUENCE metric_id_seq start with " + (Integer.MAX_VALUE-2) + " cache 1");
+                "CREATE SEQUENCE TSDB.metric_id_seq start with " + (Integer.MAX_VALUE-2) + " cache 1");
             viewConn1.createStatement().execute(
                 "CREATE VIEW metric1 AS SELECT * FROM metric_table WHERE val2=1.2");
             // create a view without a where clause
@@ -167,11 +167,11 @@ public class AutoPartitionViewsIT extends BaseHBaseManagedTimeIT {
             assertTrue("Partition column view referenced attribute should be true ",
                 partitionCol3.isViewReferenced());
             // verify viewConstant was set correctly
-            byte[] expectedPartition1 = new byte[Bytes.SIZEOF_LONG + 1];
+            byte[] expectedPartition1 = new byte[Bytes.SIZEOF_INT + 1];
             PInteger.INSTANCE.toBytes(Integer.MAX_VALUE - 2, expectedPartition1, 0);
-            byte[] expectedPartition2 = new byte[Bytes.SIZEOF_LONG + 1];
+            byte[] expectedPartition2 = new byte[Bytes.SIZEOF_INT + 1];
             PInteger.INSTANCE.toBytes(Integer.MAX_VALUE - 1, expectedPartition2, 0);
-            byte[] expectedPartition3 = new byte[Bytes.SIZEOF_LONG + 1];
+            byte[] expectedPartition3 = new byte[Bytes.SIZEOF_INT + 1];
             PInteger.INSTANCE.toBytes(Integer.MAX_VALUE, expectedPartition3, 0);
             assertArrayEquals("Unexpected Partition column view constant attribute",
                 expectedPartition1, partitionCol1.getViewConstant());
@@ -232,7 +232,7 @@ public class AutoPartitionViewsIT extends BaseHBaseManagedTimeIT {
                             isMultiTenant ? "tenantId, ": "", 
                             tableDDLOptions);
             conn.createStatement().execute(ddl);
-            conn.createStatement().execute("CREATE SEQUENCE hbase.metric_id_seq CACHE 1");
+            conn.createStatement().execute("CREATE SEQUENCE TSDB.metric_id_seq CACHE 1");
             // create a view
             viewConn1.createStatement().execute(
                 "CREATE VIEW metric1 AS SELECT * FROM hbase.metric_table WHERE val2=1.2");
@@ -306,7 +306,7 @@ public class AutoPartitionViewsIT extends BaseHBaseManagedTimeIT {
                             isMultiTenant ? "tenantId, ": "", 
                             tableDDLOptions);
             conn.createStatement().execute(ddl);
-            conn.createStatement().execute("CREATE SEQUENCE hbase.metric_id_seq CACHE 1");
+            conn.createStatement().execute("CREATE SEQUENCE TSDB.metric_id_seq CACHE 1");
             // create a view
             viewConn1.createStatement().execute(
                 "CREATE VIEW metric1 AS SELECT * FROM hbase.metric_table");

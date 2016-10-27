@@ -147,6 +147,7 @@ public class QueryDatabaseMetaDataIT extends BaseClientManagedTimeIT {
         assertEquals(CUSTOM_ENTITY_DATA_NAME, rs.getString("TABLE_NAME"));
         assertEquals(PTableType.TABLE.toString(), rs.getString("TABLE_TYPE"));
         assertEquals("false", rs.getString(PhoenixDatabaseMetaData.TRANSACTIONAL));
+        assertEquals(Boolean.FALSE, rs.getBoolean(PhoenixDatabaseMetaData.IS_NAMESPACE_MAPPED));
 
         rs = dbmd.getTables(null, CUSTOM_ENTITY_DATA_SCHEMA_NAME, CUSTOM_ENTITY_DATA_NAME, null);
         assertTrue(rs.next());
@@ -174,14 +175,110 @@ public class QueryDatabaseMetaDataIT extends BaseClientManagedTimeIT {
     }
 
     @Test
-    public void testSchemaMetadataScan() throws SQLException {
+    public void testTableTypes() throws SQLException {
+        long ts = nextTimestamp();
         Properties props = new Properties();
-        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(1));
-        props.setProperty(QueryServices.IS_NAMESPACE_MAPPING_ENABLED, Boolean.toString(true));
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
         Connection conn = DriverManager.getConnection(getUrl(), props);
-        conn.createStatement().execute("CREATE SCHEMA " + CUSTOM_ENTITY_DATA_SCHEMA_NAME);
-        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(2));
+        DatabaseMetaData dbmd = conn.getMetaData();
+        ResultSet rs = dbmd.getTableTypes();
+        assertTrue(rs.next());
+        assertEquals("INDEX",rs.getString(1));
+        assertTrue(rs.next());
+        assertEquals("SEQUENCE",rs.getString(1));
+        assertTrue(rs.next());
+        assertEquals("SYSTEM TABLE",rs.getString(1));
+        assertTrue(rs.next());
+        assertEquals("TABLE",rs.getString(1));
+        assertTrue(rs.next());
+        assertEquals("VIEW",rs.getString(1));
+        assertFalse(rs.next());
+    }
+    
+    @Test
+    public void testSequenceMetadataScan() throws SQLException {
+        long ts = nextTimestamp();
+        Properties props = new Properties();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+        conn.createStatement().execute("CREATE SEQUENCE b.s1");
+        conn.createStatement().execute("CREATE SEQUENCE a.s2");
+        conn.createStatement().execute("CREATE SEQUENCE b.s3");
+        conn.createStatement().execute("CREATE SEQUENCE c.s1");
+        
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 20));
         conn = DriverManager.getConnection(getUrl(), props);
+        DatabaseMetaData dbmd = conn.getMetaData();
+        ResultSet rs = dbmd.getTables(null, null, null, new String[] {"FOO"});
+        assertFalse(rs.next());
+        
+        rs = dbmd.getTables(null, null, null, new String[] {"FOO",PhoenixDatabaseMetaData.SEQUENCE_TABLE_TYPE});
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("A", rs.getString("TABLE_SCHEM"));
+        assertEquals("S2", rs.getString("TABLE_NAME"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("B", rs.getString("TABLE_SCHEM"));
+        assertEquals("S1", rs.getString("TABLE_NAME"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("B", rs.getString("TABLE_SCHEM"));
+        assertEquals("S3", rs.getString("TABLE_NAME"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("C", rs.getString("TABLE_SCHEM"));
+        assertEquals("S1", rs.getString("TABLE_NAME"));
+        assertFalse(rs.next());
+        
+        conn.createStatement().execute("CREATE TABLE foo (k bigint primary key)");
+        conn.createStatement().execute("CREATE TABLE z.bas (k bigint primary key)");
+        
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 30));
+        conn = DriverManager.getConnection(getUrl(), props);
+        dbmd = conn.getMetaData();
+        rs = dbmd.getTables(null, null, null, new String[] {PTableType.TABLE.toString(),PhoenixDatabaseMetaData.SEQUENCE_TABLE_TYPE});
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("A", rs.getString("TABLE_SCHEM"));
+        assertEquals("S2", rs.getString("TABLE_NAME"));
+        assertEquals(PhoenixDatabaseMetaData.SEQUENCE_TABLE_TYPE, rs.getString("TABLE_TYPE"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("B", rs.getString("TABLE_SCHEM"));
+        assertEquals("S1", rs.getString("TABLE_NAME"));
+        assertEquals(PhoenixDatabaseMetaData.SEQUENCE_TABLE_TYPE, rs.getString("TABLE_TYPE"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("B", rs.getString("TABLE_SCHEM"));
+        assertEquals("S3", rs.getString("TABLE_NAME"));
+        assertEquals(PhoenixDatabaseMetaData.SEQUENCE_TABLE_TYPE, rs.getString("TABLE_TYPE"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("C", rs.getString("TABLE_SCHEM"));
+        assertEquals("S1", rs.getString("TABLE_NAME"));
+        assertEquals(PhoenixDatabaseMetaData.SEQUENCE_TABLE_TYPE, rs.getString("TABLE_TYPE"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertNull(rs.getString("TABLE_SCHEM"));
+        assertEquals("FOO", rs.getString("TABLE_NAME"));
+        assertEquals(PTableType.TABLE.toString(), rs.getString("TABLE_TYPE"));
+        assertTrue(rs.next());
+        assertNull(rs.getString("TABLE_CAT"));
+        assertEquals("Z", rs.getString("TABLE_SCHEM"));
+        assertEquals("BAS", rs.getString("TABLE_NAME"));
+        assertEquals(PTableType.TABLE.toString(), rs.getString("TABLE_TYPE"));
+        assertFalse(rs.next());
+    }
+    
+    @Test
+    public void testSchemaMetadataScan() throws SQLException {
+        long ts = nextTimestamp();
+        ensureTableCreated(getUrl(), CUSTOM_ENTITY_DATA_FULL_NAME, null, ts);
+        ensureTableCreated(getUrl(), PTSDB_NAME, null, ts);
+        Properties props = new Properties();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 5));
+        Connection conn = DriverManager.getConnection(getUrl(), props);
         DatabaseMetaData dbmd = conn.getMetaData();
         ResultSet rs;
         rs = dbmd.getSchemas(null, CUSTOM_ENTITY_DATA_SCHEMA_NAME);
@@ -192,7 +289,13 @@ public class QueryDatabaseMetaDataIT extends BaseClientManagedTimeIT {
 
         rs = dbmd.getSchemas(null, null);
         assertTrue(rs.next());
+        assertEquals(rs.getString("TABLE_SCHEM"),null);
+        assertEquals(rs.getString("TABLE_CATALOG"),null);
+        assertTrue(rs.next());
         assertEquals(rs.getString("TABLE_SCHEM"),CUSTOM_ENTITY_DATA_SCHEMA_NAME);
+        assertEquals(rs.getString("TABLE_CATALOG"),null);
+        assertTrue(rs.next());
+        assertEquals(rs.getString("TABLE_SCHEM"),PhoenixDatabaseMetaData.SYSTEM_CATALOG_SCHEMA);
         assertEquals(rs.getString("TABLE_CATALOG"),null);
         assertFalse(rs.next());
     }
@@ -469,6 +572,20 @@ public class QueryDatabaseMetaDataIT extends BaseClientManagedTimeIT {
         
         assertFalse(rs.next());
         
+        conn.createStatement().execute("CREATE TABLE SALTEDTABLE123 (k INTEGER PRIMARY KEY, v VARCHAR) SALT_BUCKETS=3");
+        conn.close();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts + 10));
+        conn = DriverManager.getConnection(getUrl(), props);
+        dbmd = conn.getMetaData();
+        rs = dbmd.getPrimaryKeys(null, "", "SALTEDTABLE123");
+        assertTrue(rs.next());
+        assertEquals(null, rs.getString("TABLE_SCHEM"));
+        assertEquals("SALTEDTABLE123", rs.getString("TABLE_NAME"));
+        assertEquals(null, rs.getString("TABLE_CAT"));
+        assertEquals("K", rs.getString("COLUMN_NAME"));
+        assertEquals(1, rs.getInt("KEY_SEQ"));
+        assertEquals(null, rs.getString("PK_NAME"));
+        assertFalse(rs.next());
     }
     
     @Test

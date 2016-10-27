@@ -38,18 +38,6 @@ import java.util.concurrent.TimeoutException;
 import javax.annotation.Nonnull;
 import javax.annotation.concurrent.Immutable;
 
-import co.cask.tephra.Transaction;
-import co.cask.tephra.Transaction.VisibilityLevel;
-import co.cask.tephra.TransactionAware;
-import co.cask.tephra.TransactionCodec;
-import co.cask.tephra.TransactionConflictException;
-import co.cask.tephra.TransactionContext;
-import co.cask.tephra.TransactionFailureException;
-import co.cask.tephra.TransactionSystemClient;
-import co.cask.tephra.hbase11.TransactionAwareHTable;
-import co.cask.tephra.visibility.FenceWait;
-import co.cask.tephra.visibility.VisibilityFence;
-
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.HTableInterface;
@@ -101,8 +89,20 @@ import org.apache.phoenix.util.LogUtil;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.SQLCloseable;
 import org.apache.phoenix.util.SQLCloseables;
+import org.apache.phoenix.util.ScanUtil;
 import org.apache.phoenix.util.ServerUtil;
 import org.apache.phoenix.util.TransactionUtil;
+import org.apache.tephra.Transaction;
+import org.apache.tephra.Transaction.VisibilityLevel;
+import org.apache.tephra.TransactionAware;
+import org.apache.tephra.TransactionCodec;
+import org.apache.tephra.TransactionConflictException;
+import org.apache.tephra.TransactionContext;
+import org.apache.tephra.TransactionFailureException;
+import org.apache.tephra.TransactionSystemClient;
+import org.apache.tephra.hbase.TransactionAwareHTable;
+import org.apache.tephra.visibility.FenceWait;
+import org.apache.tephra.visibility.VisibilityFence;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -564,12 +564,15 @@ public class MutationState implements SQLCloseable {
         return ptr;
     }
     
-    private Iterator<Pair<byte[],List<Mutation>>> addRowMutations(final TableRef tableRef, final Map<ImmutableBytesPtr, RowMutationState> values, final long timestamp, boolean includeMutableIndexes, final boolean sendAll) { 
+    private Iterator<Pair<byte[],List<Mutation>>> addRowMutations(final TableRef tableRef, final Map<ImmutableBytesPtr, RowMutationState> values,
+            final long timestamp, boolean includeAllIndexes, final boolean sendAll) { 
         final PTable table = tableRef.getTable();
         final Iterator<PTable> indexes = // Only maintain tables with immutable rows through this client-side mechanism
-                (table.isImmutableRows() || includeMutableIndexes) ? 
-                        IndexMaintainer.nonDisabledIndexIterator(table.getIndexes().iterator()) : 
-                        Iterators.<PTable>emptyIterator();
+                 includeAllIndexes || table.isWALDisabled() ? // TODO: remove check for isWALDisabled once PHOENIX-3137 is fixed.
+                     IndexMaintainer.nonDisabledIndexIterator(table.getIndexes().iterator()) :
+                         table.isImmutableRows() ?
+                            IndexMaintainer.enabledGlobalIndexIterator(table.getIndexes().iterator()) :
+                                Iterators.<PTable>emptyIterator();
         final List<Mutation> mutationList = Lists.newArrayListWithExpectedSize(values.size());
         final List<Mutation> mutationsPertainingToIndex = indexes.hasNext() ? Lists.<Mutation>newArrayListWithExpectedSize(values.size()) : null;
         generateMutations(tableRef, timestamp, values, mutationList, mutationsPertainingToIndex);
@@ -1074,7 +1077,16 @@ public class MutationState implements SQLCloseable {
     private ServerCache setMetaDataOnMutations(TableRef tableRef, List<? extends Mutation> mutations,
             ImmutableBytesWritable indexMetaDataPtr) throws SQLException {
         PTable table = tableRef.getTable();
-        byte[] tenantId = connection.getTenantId() == null ? null : connection.getTenantId().getBytes();
+        final byte[] tenantIdBytes;
+        if(table.isMultiTenant()) {
+            tenantIdBytes = connection.getTenantId() == null ? null :
+                    ScanUtil.getTenantIdBytes(
+                            table.getRowKeySchema(),
+                            table.getBucketNum() != null,
+                            connection.getTenantId(), table.getViewIndexId() != null);
+        } else {
+            tenantIdBytes = connection.getTenantId() == null ? null : connection.getTenantId().getBytes();
+        }
         ServerCache cache = null;
         byte[] attribValue = null;
         byte[] uuidValue = null;
@@ -1098,8 +1110,8 @@ public class MutationState implements SQLCloseable {
         // Either set the UUID to be able to access the index metadata from the cache
         // or set the index metadata directly on the Mutation
         for (Mutation mutation : mutations) {
-            if (tenantId != null) {
-                mutation.setAttribute(PhoenixRuntime.TENANT_ID_ATTRIB, tenantId);
+            if (connection.getTenantId() != null) {
+                mutation.setAttribute(PhoenixRuntime.TENANT_ID_ATTRIB, tenantIdBytes);
             }
             mutation.setAttribute(PhoenixIndexCodec.INDEX_UUID, uuidValue);
             if (attribValue != null) {

@@ -33,18 +33,20 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Properties;
-import java.util.Set;
 
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.client.HTableInterface;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.RowMutations;
+import org.apache.hadoop.hbase.snapshot.SnapshotCreationException;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.query.QueryServices;
+import org.apache.phoenix.schema.PName;
+import org.apache.phoenix.schema.PNameFactory;
 import org.apache.phoenix.util.MetaDataUtil;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.SchemaUtil;
@@ -129,7 +131,8 @@ public class UpgradeIT extends BaseHBaseManagedTimeIT {
             String indexName = "IDX";
             String localIndexName = "LIDX";
             String[] tableNames = new String[] { phoenixFullTableName, schemaName + "." + indexName,
-                    schemaName + "." + localIndexName, "diff.v", "test.v" };
+                    schemaName + "." + localIndexName, "diff.v", "test.v","v"};
+            String[] viewIndexes = new String[] { "diff.v_idx", "test.v_idx" };
             conn.createStatement().execute("CREATE TABLE " + phoenixFullTableName
                     + "(k VARCHAR PRIMARY KEY, v INTEGER, f INTEGER, g INTEGER NULL, h INTEGER NULL)");
             PreparedStatement upsertStmt = conn
@@ -150,6 +153,7 @@ public class UpgradeIT extends BaseHBaseManagedTimeIT {
             conn.createStatement().execute("CREATE VIEW diff.v (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
             // creating view in schema 'test'
             conn.createStatement().execute("CREATE VIEW test.v (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
+            conn.createStatement().execute("CREATE VIEW v (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
             // Creating index on views
             conn.createStatement().execute("create index v_idx on diff.v(col)");
             conn.createStatement().execute("create index v_idx on test.v(col)");
@@ -163,25 +167,34 @@ public class UpgradeIT extends BaseHBaseManagedTimeIT {
                 }
             }
 
+            // validate view Index data
+            for (String viewIndex : viewIndexes) {
+                ResultSet rs = conn.createStatement().executeQuery("select * from " + viewIndex);
+                for (String str : strings) {
+                    assertTrue(rs.next());
+                    assertEquals(str, rs.getString(2));
+                }
+            }
+
             HBaseAdmin admin = conn.unwrap(PhoenixConnection.class).getQueryServices().getAdmin();
             assertTrue(admin.tableExists(phoenixFullTableName));
-            assertTrue(admin.tableExists(MetaDataUtil.getLocalIndexPhysicalName(Bytes.toBytes(phoenixFullTableName))));
             assertTrue(admin.tableExists(schemaName + QueryConstants.NAME_SEPARATOR + indexName));
             assertTrue(admin.tableExists(MetaDataUtil.getViewIndexPhysicalName(Bytes.toBytes(phoenixFullTableName))));
             Properties props = new Properties();
             props.setProperty(QueryServices.IS_NAMESPACE_MAPPING_ENABLED, Boolean.toString(true));
+            props.setProperty(QueryServices.IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE, Boolean.toString(false));
             admin.close();
             PhoenixConnection phxConn = DriverManager.getConnection(getUrl(), props).unwrap(PhoenixConnection.class);
             UpgradeUtil.upgradeTable(phxConn, phoenixFullTableName);
-            Set<String> viewNames = MetaDataUtil.getViewNames(phxConn, phoenixFullTableName);
-            for (String viewName : viewNames) {
-                UpgradeUtil.upgradeTable(phxConn, viewName);
-            }
-            admin = phxConn.unwrap(PhoenixConnection.class).getQueryServices().getAdmin();
+            UpgradeUtil.mapChildViewsToNamespace(phxConn, phoenixFullTableName,props);
+            phxConn.close();
+            props = new Properties();
+            phxConn = DriverManager.getConnection(getUrl(), props).unwrap(PhoenixConnection.class);
+            admin = phxConn.getQueryServices().getAdmin();
             String hbaseTableName = SchemaUtil.getPhysicalTableName(Bytes.toBytes(phoenixFullTableName), true)
                     .getNameAsString();
             assertTrue(admin.tableExists(hbaseTableName));
-            assertTrue(admin.tableExists(MetaDataUtil.getLocalIndexPhysicalName(Bytes.toBytes(hbaseTableName))));
+            assertTrue(admin.tableExists(Bytes.toBytes(hbaseTableName)));
             assertTrue(admin.tableExists(schemaName + QueryConstants.NAMESPACE_SEPARATOR + indexName));
             assertTrue(admin.tableExists(MetaDataUtil.getViewIndexPhysicalName(Bytes.toBytes(hbaseTableName))));
             i = 0;
@@ -193,10 +206,152 @@ public class UpgradeIT extends BaseHBaseManagedTimeIT {
                     assertEquals(str, rs.getString(1));
                 }
             }
+            // validate view Index data
+            for (String viewIndex : viewIndexes) {
+                ResultSet rs = conn.createStatement().executeQuery("select * from " + viewIndex);
+                for (String str : strings) {
+                    assertTrue(rs.next());
+                    assertEquals(str, rs.getString(2));
+                }
+            }
+            PName tenantId = phxConn.getTenantId();
+            PName physicalName = PNameFactory.newName(hbaseTableName);
+            String oldSchemaName = MetaDataUtil.getViewIndexSequenceSchemaName(PNameFactory.newName(phoenixFullTableName),
+                    false);
+            String newSchemaName = MetaDataUtil.getViewIndexSequenceSchemaName(physicalName, true);
+            String newSequenceName = MetaDataUtil.getViewIndexSequenceName(physicalName, tenantId, true);
+            ResultSet rs = phxConn.createStatement()
+                    .executeQuery("SELECT " + PhoenixDatabaseMetaData.CURRENT_VALUE + "  FROM "
+                            + PhoenixDatabaseMetaData.SYSTEM_SEQUENCE + " WHERE " + PhoenixDatabaseMetaData.TENANT_ID
+                            + " IS NULL AND " + PhoenixDatabaseMetaData.SEQUENCE_SCHEMA + " = '" + newSchemaName
+                            + "' AND " + PhoenixDatabaseMetaData.SEQUENCE_NAME + "='" + newSequenceName + "'");
+            assertTrue(rs.next());
+            assertEquals("-32765", rs.getString(1));
+            rs = phxConn.createStatement().executeQuery("SELECT " + PhoenixDatabaseMetaData.SEQUENCE_SCHEMA + ","
+                    + PhoenixDatabaseMetaData.SEQUENCE_SCHEMA + "," + PhoenixDatabaseMetaData.CURRENT_VALUE + "  FROM "
+                    + PhoenixDatabaseMetaData.SYSTEM_SEQUENCE + " WHERE " + PhoenixDatabaseMetaData.TENANT_ID
+                    + " IS NULL AND " + PhoenixDatabaseMetaData.SEQUENCE_SCHEMA + " = '" + oldSchemaName + "'");
+            assertFalse(rs.next());
             phxConn.close();
             admin.close();
+   
         }
     }
+
+    @Test
+    public void testMapMultiTenantTableToNamespaceDuringUpgrade() throws SQLException, SnapshotCreationException,
+            IllegalArgumentException, IOException, InterruptedException {
+        String[] strings = new String[] { "a", "b", "c", "d" };
+        String schemaName = "TEST";
+        String phoenixFullTableName = schemaName + ".S_NEW1";
+        String hbaseTableName = SchemaUtil.getPhysicalTableName(Bytes.toBytes(phoenixFullTableName), true)
+                .getNameAsString();
+        String indexName = "IDX";
+        String[] tableNames = new String[] { phoenixFullTableName, "diff.v1", "test.v1", "v1" };
+        String[] viewIndexes = new String[] { "test.v_idx", "diff.v_idx" };
+        String[] tenantViewIndexes = new String[] { "test.v1_idx", "diff.v1_idx" };
+        try (Connection conn = DriverManager.getConnection(getUrl())) {
+            conn.createStatement().execute("CREATE TABLE " + phoenixFullTableName
+                    + "(k VARCHAR not null, v INTEGER not null, f INTEGER, g INTEGER NULL, h INTEGER NULL CONSTRAINT pk PRIMARY KEY(k,v)) MULTI_TENANT=true");
+            PreparedStatement upsertStmt = conn
+                    .prepareStatement("UPSERT INTO " + phoenixFullTableName + " VALUES(?, ?, 0, 0, 0)");
+            int i = 1;
+            for (String str : strings) {
+                upsertStmt.setString(1, str);
+                upsertStmt.setInt(2, i++);
+                upsertStmt.execute();
+            }
+            conn.commit();
+
+            // creating global index
+            conn.createStatement().execute("create index " + indexName + " on " + phoenixFullTableName + "(f)");
+            // creating view in schema 'diff'
+            conn.createStatement().execute("CREATE VIEW diff.v (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
+            // creating view in schema 'test'
+            conn.createStatement().execute("CREATE VIEW test.v (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
+            conn.createStatement().execute("CREATE VIEW v (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
+            // Creating index on views
+            conn.createStatement().execute("create local index v_idx on diff.v(col)");
+            conn.createStatement().execute("create local index v_idx on test.v(col)");
+        }
+        Properties props = new Properties();
+        String tenantId = "a";
+        props.setProperty(PhoenixRuntime.TENANT_ID_ATTRIB, tenantId);
+        try (Connection conn = DriverManager.getConnection(getUrl(), props)) {
+            PreparedStatement upsertStmt = conn
+                    .prepareStatement("UPSERT INTO " + phoenixFullTableName + "(k,v,f,g,h)  VALUES(?, ?, 0, 0, 0)");
+            int i = 1;
+            for (String str : strings) {
+                upsertStmt.setString(1, str);
+                upsertStmt.setInt(2, i++);
+                upsertStmt.execute();
+            }
+            conn.commit();
+            // creating view in schema 'diff'
+            conn.createStatement()
+                    .execute("CREATE VIEW diff.v1 (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
+            // creating view in schema 'test'
+            conn.createStatement()
+                    .execute("CREATE VIEW test.v1 (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
+            conn.createStatement().execute("CREATE VIEW v1 (col VARCHAR) AS SELECT * FROM " + phoenixFullTableName);
+            // Creating index on views
+            conn.createStatement().execute("create index v1_idx on diff.v1(col)");
+            conn.createStatement().execute("create index v1_idx on test.v1(col)");
+        }
+
+        props = new Properties();
+        props.setProperty(QueryServices.IS_NAMESPACE_MAPPING_ENABLED, Boolean.toString(true));
+        props.setProperty(QueryServices.IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE, Boolean.toString(false));
+        PhoenixConnection phxConn = DriverManager.getConnection(getUrl(), props).unwrap(PhoenixConnection.class);
+        UpgradeUtil.upgradeTable(phxConn, phoenixFullTableName);
+        UpgradeUtil.mapChildViewsToNamespace(phxConn,phoenixFullTableName,props);
+        props.setProperty(PhoenixRuntime.TENANT_ID_ATTRIB, tenantId);
+        phxConn = DriverManager.getConnection(getUrl(), props).unwrap(PhoenixConnection.class);
+        int i = 1;
+        String indexPhysicalTableName = Bytes
+                .toString(MetaDataUtil.getViewIndexPhysicalName(Bytes.toBytes(hbaseTableName)));
+        // validate data with tenant
+        for (String tableName : tableNames) {
+            assertTableUsed(phxConn, tableName, hbaseTableName);
+            ResultSet rs = phxConn.createStatement().executeQuery("select * from " + tableName);
+            assertTrue(rs.next());
+            do {
+                assertEquals(i++, rs.getInt(1));
+            } while (rs.next());
+            i = 1;
+        }
+        // validate view Index data
+        for (String viewIndex : tenantViewIndexes) {
+            assertTableUsed(phxConn, viewIndex, indexPhysicalTableName);
+            ResultSet rs = phxConn.createStatement().executeQuery("select * from " + viewIndex);
+            assertTrue(rs.next());
+            do {
+                assertEquals(i++, rs.getInt(2));
+            } while (rs.next());
+            i = 1;
+        }
+        phxConn.close();
+        props.remove(PhoenixRuntime.TENANT_ID_ATTRIB);
+        phxConn = DriverManager.getConnection(getUrl(), props).unwrap(PhoenixConnection.class);
+
+        // validate view Index data
+        for (String viewIndex : viewIndexes) {
+            assertTableUsed(phxConn, viewIndex, hbaseTableName);
+            ResultSet rs = phxConn.createStatement().executeQuery("select * from " + viewIndex);
+            for (String str : strings) {
+                assertTrue(rs.next());
+                assertEquals(str, rs.getString(1));
+            }
+        }
+        phxConn.close();
+    }
+
+    public void assertTableUsed(Connection conn, String phoenixTableName, String hbaseTableName) throws SQLException {
+        ResultSet rs = conn.createStatement().executeQuery("EXPLAIN SELECT * FROM " + phoenixTableName);
+        assertTrue(rs.next());
+        assertTrue(rs.getString(1).contains(hbaseTableName));
+    }
+    
     
     @Test
     public void testSettingBaseColumnCountForMultipleViewsOnTable() throws Exception {

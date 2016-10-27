@@ -42,6 +42,7 @@ import static org.apache.phoenix.query.QueryServices.INDEX_POPULATION_SLEEP_TIME
 import static org.apache.phoenix.query.QueryServices.IS_NAMESPACE_MAPPING_ENABLED;
 import static org.apache.phoenix.query.QueryServices.IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE;
 import static org.apache.phoenix.query.QueryServices.KEEP_ALIVE_MS_ATTRIB;
+import static org.apache.phoenix.query.QueryServices.LOCAL_INDEX_CLIENT_UPGRADE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MASTER_INFO_PORT_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MAX_CLIENT_METADATA_CACHE_SIZE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MAX_MEMORY_PERC_ATTRIB;
@@ -136,7 +137,7 @@ public class QueryServicesOptions {
     // latency and less parallelization.
     public static final long DEFAULT_SCAN_RESULT_CHUNK_SIZE = 2999;
     public static final boolean DEFAULT_IS_NAMESPACE_MAPPING_ENABLED = false;
-    public static final boolean DEFAULT_IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE = false;
+    public static final boolean DEFAULT_IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE = true;
 
     //
     // Spillable GroupBy - SPGBY prefix
@@ -189,6 +190,8 @@ public class QueryServicesOptions {
     public static final boolean DEFAULT_RUN_UPDATE_STATS_ASYNC = true;
     public static final boolean DEFAULT_COMMIT_STATS_ASYNC = true;
     public static final int DEFAULT_STATS_POOL_SIZE = 4;
+    // Maximum size (in bytes) that cached table stats should take upm
+    public static final long DEFAULT_STATS_MAX_CACHE_SIZE = 256 * 1024 * 1024;
 
     public static final boolean DEFAULT_USE_REVERSE_SCAN = true;
 
@@ -234,7 +237,7 @@ public class QueryServicesOptions {
     
     public static final long DEFAULT_INDEX_POPULATION_SLEEP_TIME = 5000;
 
-    // QueryServer defaults -- ensure ThinClientUtil is also updated since phoenix-server-client
+    // QueryServer defaults -- ensure ThinClientUtil is also updated since phoenix-queryserver-client
     // doesn't depend on phoenix-core.
     public static final String DEFAULT_QUERY_SERVER_SERIALIZATION = "PROTOBUF";
     public static final int DEFAULT_QUERY_SERVER_HTTP_PORT = 8765;
@@ -244,6 +247,10 @@ public class QueryServicesOptions {
     public static final int DEFAULT_RENEW_LEASE_THRESHOLD_MILLISECONDS =
             (3 * DEFAULT_HBASE_CLIENT_SCANNER_TIMEOUT_PERIOD) / 4;
     public static final int DEFAULT_RENEW_LEASE_THREAD_POOL_SIZE = 10;
+    public static final boolean DEFAULT_LOCAL_INDEX_CLIENT_UPGRADE = true;
+    public static final float DEFAULT_LIMITED_QUERY_SERIAL_THRESHOLD = 0.2f;
+    
+    public static final boolean DEFAULT_INDEX_ASYNC_BUILD_ENABLED = true;
 
     @SuppressWarnings("serial")
     public static final Set<String> DEFAULT_QUERY_SERVER_SKIP_WORDS = new HashSet<String>() {
@@ -320,8 +327,8 @@ public class QueryServicesOptions {
             .setIfUnset(RUN_RENEW_LEASE_FREQUENCY_INTERVAL_MILLISECONDS, DEFAULT_RUN_RENEW_LEASE_FREQUENCY_INTERVAL_MILLISECONDS)
             .setIfUnset(RENEW_LEASE_THREAD_POOL_SIZE, DEFAULT_RENEW_LEASE_THREAD_POOL_SIZE)
             .setIfUnset(IS_NAMESPACE_MAPPING_ENABLED, DEFAULT_IS_NAMESPACE_MAPPING_ENABLED)
-            .setIfUnset(IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE, DEFAULT_IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE);
-            
+            .setIfUnset(IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE, DEFAULT_IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE)
+            .setIfUnset(LOCAL_INDEX_CLIENT_UPGRADE_ATTRIB, DEFAULT_LOCAL_INDEX_CLIENT_UPGRADE);
         // HBase sets this to 1, so we reset it to something more appropriate.
         // Hopefully HBase will change this, because we can't know if a user set
         // it to 1, so we'll change it.

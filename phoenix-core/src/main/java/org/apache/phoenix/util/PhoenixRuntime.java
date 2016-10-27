@@ -85,13 +85,12 @@ import org.apache.phoenix.schema.RowKeyValueAccessor;
 import org.apache.phoenix.schema.TableNotFoundException;
 import org.apache.phoenix.schema.ValueBitSet;
 import org.apache.phoenix.schema.types.PDataType;
+import org.apache.tephra.util.TxUtils;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
-
-import co.cask.tephra.util.TxUtils;
 
 /**
  *
@@ -212,15 +211,15 @@ public class PhoenixRuntime {
         PhoenixConnection conn = null;
         try {
             Properties props = new Properties();
+            if (execCmd.isLocalIndexUpgrade()) {
+                props.setProperty(QueryServices.LOCAL_INDEX_CLIENT_UPGRADE_ATTRIB, "false");
+            }
             conn = DriverManager.getConnection(jdbcUrl, props).unwrap(PhoenixConnection.class);
             if (execCmd.isMapNamespace()) {
                 String srcTable = execCmd.getSrcTable();
+                System.out.println("Starting upgrading table:" + srcTable + "... please don't kill it in between!!");
                 UpgradeUtil.upgradeTable(conn, srcTable);
-                Set<String> viewNames = MetaDataUtil.getViewNames(conn, srcTable);
-                System.out.println("Views found:"+viewNames);
-                for (String viewName : viewNames) {
-                    UpgradeUtil.upgradeTable(conn, viewName);
-                }
+                UpgradeUtil.mapChildViewsToNamespace(conn, srcTable,props);
             } else if (execCmd.isUpgrade()) {
                 if (conn.getClientInfo(PhoenixRuntime.CURRENT_SCN_ATTRIB) != null) { throw new SQLException(
                         "May not specify the CURRENT_SCN property when upgrading"); }
@@ -245,6 +244,8 @@ public class PhoenixRuntime {
                 } else {
                     UpgradeUtil.upgradeDescVarLengthRowKeys(conn, execCmd.getInputFiles(), execCmd.isBypassUpgrade());
                 }
+            } else if(execCmd.isLocalIndexUpgrade()) {
+                UpgradeUtil.upgradeLocalIndexes(conn);
             } else {
                 for (String inputFile : execCmd.getInputFiles()) {
                     if (inputFile.endsWith(SQL_FILE_EXT)) {
@@ -371,6 +372,19 @@ public class PhoenixRuntime {
         };
     }
 
+    public static PTable getTableNoCache(Connection conn, String name) throws SQLException {
+        String schemaName = SchemaUtil.getSchemaNameFromFullName(name);
+        String tableName = SchemaUtil.getTableNameFromFullName(name);
+        PhoenixConnection pconn = conn.unwrap(PhoenixConnection.class);
+        MetaDataMutationResult result = new MetaDataClient(pconn).updateCache(pconn.getTenantId(),
+                schemaName, tableName, true);
+        if(result.getMutationCode() != MutationCode.TABLE_ALREADY_EXISTS) {
+            throw new TableNotFoundException(schemaName, tableName);
+        }
+
+        return result.getTable();
+
+    }
     /**
      * 
      * @param conn
@@ -517,6 +531,7 @@ public class PhoenixRuntime {
         private boolean isBypassUpgrade;
         private boolean mapNamespace;
         private String srcTable;
+        private boolean localIndexUpgrade;
 
         /**
          * Factory method to build up an {@code ExecutionCommand} based on supplied parameters.
@@ -558,6 +573,9 @@ public class PhoenixRuntime {
             Option mapNamespaceOption = new Option("m", "map-namespace", true,
                     "Used to map table to a namespace matching with schema, require "+ QueryServices.IS_NAMESPACE_MAPPING_ENABLED +
                     " to be enabled");
+            Option localIndexUpgradeOption = new Option("l", "local-index-upgrade", false,
+                "Used to upgrade local index data by moving index data from separate table to "
+                + "separate column families in the same table.");
             Options options = new Options();
             options.addOption(tableOption);
             options.addOption(headerOption);
@@ -569,6 +587,7 @@ public class PhoenixRuntime {
             options.addOption(upgradeOption);
             options.addOption(bypassUpgradeOption);
             options.addOption(mapNamespaceOption);
+            options.addOption(localIndexUpgradeOption);
 
             CommandLineParser parser = new PosixParser();
             CommandLine cmdLine = null;
@@ -579,6 +598,7 @@ public class PhoenixRuntime {
             }
 
             ExecutionCommand execCmd = new ExecutionCommand();
+            execCmd.connectionString = "";
             if(cmdLine.hasOption(mapNamespaceOption.getOpt())){
                 execCmd.mapNamespace = true;
                 execCmd.srcTable = validateTableName(cmdLine.getOptionValue(mapNamespaceOption.getOpt()));
@@ -622,23 +642,30 @@ public class PhoenixRuntime {
                 }
                 execCmd.isBypassUpgrade = true;
             }
-
+            if(cmdLine.hasOption(localIndexUpgradeOption.getOpt())) {
+                execCmd.localIndexUpgrade = true;
+            }
 
             List<String> argList = Lists.newArrayList(cmdLine.getArgList());
             if (argList.isEmpty()) {
-                usageError("Connection string to HBase must be supplied", options);
+                usageError("At least one input file must be supplied", options);
             }
-            execCmd.connectionString = argList.remove(0);
             List<String> inputFiles = Lists.newArrayList();
+            int i = 0;
             for (String arg : argList) {
                 if (execCmd.isUpgrade || arg.endsWith(CSV_FILE_EXT) || arg.endsWith(SQL_FILE_EXT)) {
                     inputFiles.add(arg);
                 } else {
-                    usageError("Don't know how to interpret argument '" + arg + "'", options);
+                    if (i == 0) {
+                        execCmd.connectionString = arg;
+                    } else {
+                        usageError("Don't know how to interpret argument '" + arg + "'", options);
+                    }
                 }
+                i++;
             }
 
-            if (inputFiles.isEmpty() && !execCmd.isUpgrade && !execCmd.isMapNamespace()) {
+            if (inputFiles.isEmpty() && !execCmd.isUpgrade && !execCmd.isMapNamespace() && !execCmd.isLocalIndexUpgrade()) {
                 usageError("At least one input file must be supplied", options);
             }
 
@@ -678,6 +705,7 @@ public class PhoenixRuntime {
                             "<path-to-sql-or-csv-file>...",
                     options);
             System.out.println("Examples:\n" +
+                    "  psql my_ddl.sql\n" +
                     "  psql localhost my_ddl.sql\n" +
                     "  psql localhost my_ddl.sql my_table.csv\n" +
                     "  psql -t MY_TABLE my_cluster:1825 my_table2012-Q3.csv\n" +
@@ -736,6 +764,10 @@ public class PhoenixRuntime {
 
         public String getSrcTable() {
             return srcTable;
+        }
+
+        public boolean isLocalIndexUpgrade() {
+            return localIndexUpgrade;
         }
     }
     
@@ -1047,7 +1079,8 @@ public class PhoenixRuntime {
             throw new SQLFeatureNotSupportedException();
         }
         
-        int pkPosition = table.getBucketNum() == null ? 0 : 1;
+        // skip salt and viewIndexId columns.
+        int pkPosition = (table.getBucketNum() == null ? 0 : 1) + (table.getViewIndexId() == null ? 0 : 1);
         List<PColumn> pkColumns = table.getPKColumns();
         return new RowKeyColumnExpression(pkColumns.get(pkPosition), new RowKeyValueAccessor(pkColumns, pkPosition));
     }

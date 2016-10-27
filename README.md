@@ -1,5 +1,20 @@
 ### Introduction
 This fork of the <b>[Apache Phoenix](http://phoenix.apache.org/)</b> project modifies the [Upsert Values](https://phoenix.apache.org/language/#upsert_values) grammer to only update/insert the record if a given expression is evaluated to true. Only the row that is being modified can be referenced in the expressions. This allows to check the existing column values before performing the update. The functionality is similar to HBase's [checkAndPut](http://hbase.apache.org/devapidocs/org/apache/hadoop/hbase/client/HTable.html#checkAndPut%28byte[],%20byte[],%20byte[],%20byte[],%20org.apache.hadoop.hbase.client.Put%29) operation. To support this 'Compare' keyword is added to [upsert values](https://phoenix.apache.org/language/#upsert_values) grammer. If the compare expression evaluates to true, the changes are applied, otherwise the changes are skipped and no errors are raised. Compare expressions support arithmetic and logical operators.
+contributor license agreements.  See the NOTICE file distributed with
+this work for additional information regarding copyright ownership.
+The ASF licenses this file to You under the Apache License, Version 2.0
+(the "License"); you may not use this file except in compliance with
+the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
 
 ### Examples
 ```sql

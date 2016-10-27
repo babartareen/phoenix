@@ -155,6 +155,9 @@ public class FromCompiler {
                 schemaName = statement.getTableName().getSchemaName();
                 if (schemaName != null) {
                     new SchemaResolver(connection, statement.getTableName().getSchemaName(), true);
+                } else if (connection.getSchema() != null) {
+                    // To ensure schema set through properties or connection string exists before creating table
+                    new SchemaResolver(connection, connection.getSchema(), true);
                 }
             }
             return EMPTY_TABLE_RESOLVER;
@@ -182,7 +185,7 @@ public class FromCompiler {
                     if (htable != null) Closeables.closeQuietly(htable);
                 }
                 tableNode = NamedTableNode.create(null, baseTable, statement.getColumnDefs());
-                return new SingleTableColumnResolver(connection, tableNode, e.getTimeStamp(), new HashMap<String, UDFParseNode>(1));
+                return new SingleTableColumnResolver(connection, tableNode, e.getTimeStamp(), new HashMap<String, UDFParseNode>(1), false);
             }
             throw e;
         }
@@ -217,6 +220,10 @@ public class FromCompiler {
     public static ColumnResolver getResolverForSchema(UseSchemaStatement statement, PhoenixConnection connection)
             throws SQLException {
         return new SchemaResolver(connection, SchemaUtil.normalizeIdentifier(statement.getSchemaName()), true);
+    }
+
+    public static ColumnResolver getResolverForSchema(String schema, PhoenixConnection connection) throws SQLException {
+        return new SchemaResolver(connection, SchemaUtil.normalizeIdentifier(schema), true);
     }
 
     public static ColumnResolver getResolver(NamedTableNode tableNode, PhoenixConnection connection) throws SQLException {
@@ -325,7 +332,7 @@ public class FromCompiler {
     	private final String alias;
         private final List<PSchema> schemas;
 
-       public SingleTableColumnResolver(PhoenixConnection connection, NamedTableNode table, long timeStamp, Map<String, UDFParseNode> udfParseNodes) throws SQLException  {
+       public SingleTableColumnResolver(PhoenixConnection connection, NamedTableNode table, long timeStamp, Map<String, UDFParseNode> udfParseNodes, boolean isNamespaceMapped) throws SQLException  {
            super(connection, 0, false, udfParseNodes);
            List<PColumnFamily> families = Lists.newArrayListWithExpectedSize(table.getDynamicColumns().size());
            for (ColumnDef def : table.getDynamicColumns()) {
@@ -338,8 +345,8 @@ public class FromCompiler {
             if (connection.getSchema() != null) {
                 schema = schema != null ? schema : connection.getSchema();
             }
-            PTable theTable = new PTableImpl(connection.getTenantId(), schema, table.getName().getTableName(),
-                    scn == null ? HConstants.LATEST_TIMESTAMP : scn, families);
+           PTable theTable = new PTableImpl(connection.getTenantId(), schema, table.getName().getTableName(),
+                    scn == null ? HConstants.LATEST_TIMESTAMP : scn, families, isNamespaceMapped);
            theTable = this.addDynamicColumns(table.getDynamicColumns(), theTable);
            alias = null;
            tableRefs = ImmutableList.of(new TableRef(alias, theTable, timeStamp, !table.getDynamicColumns().isEmpty()));
@@ -776,7 +783,7 @@ public class FromCompiler {
                     MetaDataProtocol.MIN_TABLE_TIMESTAMP, PTable.INITIAL_SEQ_NUM, null, null, columns, null, null,
                     Collections.<PTable> emptyList(), false, Collections.<PName> emptyList(), null, null, false, false,
                     false, null, null, null, false, false, 0, 0L, SchemaUtil
-                            .isNamespaceMappingEnabled(PTableType.SUBQUERY, connection.getQueryServices().getProps()), null);
+                            .isNamespaceMappingEnabled(PTableType.SUBQUERY, connection.getQueryServices().getProps()), null, false);
 
             String alias = subselectNode.getAlias();
             TableRef tableRef = new TableRef(alias, t, MetaDataProtocol.MIN_TABLE_TIMESTAMP, false);

@@ -172,25 +172,6 @@ class PhoenixSparkIT extends FunSuite with Matchers with BeforeAndAfterAll {
     count shouldEqual 1L
   }
 
-  test("Using a predicate referring to a non-existent column should fail") {
-    intercept[Exception] {
-      val sqlContext = new SQLContext(sc)
-
-      val df1 = sqlContext.phoenixTableAsDataFrame(
-        SchemaUtil.getEscapedArgument("table3"),
-        Array("id", "col1"),
-        predicate = Some("foo = bar"),
-        conf = hbaseConfiguration)
-
-      df1.registerTempTable("table3")
-
-      val sqlRdd = sqlContext.sql("SELECT * FROM table3")
-
-      // we have to execute an action before the predicate failure can occur
-      val count = sqlRdd.count()
-    }.getCause shouldBe a[ColumnNotFoundException]
-  }
-
   test("Can create schema RDD with predicate that will never match") {
     val sqlContext = new SQLContext(sc)
 
@@ -632,12 +613,24 @@ class PhoenixSparkIT extends FunSuite with Matchers with BeforeAndAfterAll {
     val dt = df.select("COL1").first().getDate(0).getTime
     val epoch = new Date().getTime
 
-    // NOTE: Spark DateType drops hour, minute, second, as per the java.sql.Date spec. Unfortunately if you want to
-    // read the full date row, you need to use the RDD integration instead. In the future we could force the schema
-    // converter to cast the date as a timestamp instead...
+    // NOTE: Spark DateType drops hour, minute, second, as per the java.sql.Date spec
+    // Use 'dateAsTimestamp' option to coerce DATE to TIMESTAMP without losing resolution
 
     // Note that Spark also applies the timezone offset to the returned date epoch. Rather than perform timezone
     // gymnastics, just make sure we're within 24H of the epoch generated just now
     assert(Math.abs(epoch - dt) < 86400000)
+  }
+
+  test("Can coerce Phoenix DATE columns to TIMESTAMP through DataFrame API") {
+    val sqlContext = new SQLContext(sc)
+    val df = sqlContext.read
+      .format("org.apache.phoenix.spark")
+      .options(Map("table" -> "DATE_TEST", "zkUrl" -> quorumAddress, "dateAsTimestamp" -> "true"))
+      .load
+    val dtRes = df.select("COL1").first()
+    val ts = dtRes.getTimestamp(0).getTime
+    val epoch = new Date().getTime
+
+    assert(Math.abs(epoch - ts) < 300000)
   }
 }

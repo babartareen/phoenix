@@ -68,8 +68,9 @@ public abstract class MetaDataProtocol extends MetaDataService {
     public static final long MIN_TABLE_TIMESTAMP = 0;
 
     public static final int DEFAULT_MAX_META_DATA_VERSIONS = 1000;
-    public static final int DEFAULT_MAX_STAT_DATA_VERSIONS = 3;
     public static final boolean DEFAULT_META_DATA_KEEP_DELETED_CELLS = true;
+    public static final int DEFAULT_MAX_STAT_DATA_VERSIONS = 1;
+    public static final boolean DEFAULT_STATS_KEEP_DELETED_CELLS = false;
     
     // Min system table timestamps for every release.
     public static final long MIN_SYSTEM_TABLE_TIMESTAMP_4_1_0 = MIN_TABLE_TIMESTAMP + 3;
@@ -79,7 +80,7 @@ public abstract class MetaDataProtocol extends MetaDataService {
     public static final long MIN_SYSTEM_TABLE_TIMESTAMP_4_5_0 = MIN_TABLE_TIMESTAMP + 8;
     public static final long MIN_SYSTEM_TABLE_TIMESTAMP_4_6_0 = MIN_TABLE_TIMESTAMP + 9;
     public static final long MIN_SYSTEM_TABLE_TIMESTAMP_4_7_0 = MIN_TABLE_TIMESTAMP + 15;
-    public static final long MIN_SYSTEM_TABLE_TIMESTAMP_4_8_0 = MIN_TABLE_TIMESTAMP + 16;
+    public static final long MIN_SYSTEM_TABLE_TIMESTAMP_4_8_0 = MIN_TABLE_TIMESTAMP + 18;
     // MIN_SYSTEM_TABLE_TIMESTAMP needs to be set to the max of all the MIN_SYSTEM_TABLE_TIMESTAMP_* constants
     public static final long MIN_SYSTEM_TABLE_TIMESTAMP = MIN_SYSTEM_TABLE_TIMESTAMP_4_8_0;
     // TODO: pare this down to minimum, as we don't need duplicates for both table and column errors, nor should we need

@@ -214,6 +214,10 @@ public class SchemaUtil {
         return name!=null && name.length() > 0 && name.charAt(0)=='"';
     }
     
+    private static boolean isExistingTableMappedToPhoenixName(String name) {
+        return name != null && name.length() > 0 && name.charAt(0) == '"' && name.indexOf("\"", 1) == name.length() - 1;
+    }
+
     public static <T> List<T> concat(List<T> l1, List<T> l2) {
         int size1 = l1.size();
         if (size1 == 0) {
@@ -597,8 +601,9 @@ public class SchemaUtil {
     }
 
     public static String getSchemaNameFromFullName(String tableName) {
-        if (tableName
-                .contains(":")) { return getSchemaNameFromFullName(tableName, QueryConstants.NAMESPACE_SEPARATOR); }
+        if (isExistingTableMappedToPhoenixName(tableName)) { return StringUtil.EMPTY_STRING; }
+        if (tableName.contains(QueryConstants.NAMESPACE_SEPARATOR)) { return getSchemaNameFromFullName(tableName,
+                QueryConstants.NAMESPACE_SEPARATOR); }
         return getSchemaNameFromFullName(tableName, QueryConstants.NAME_SEPARATOR);
     }
 
@@ -623,6 +628,7 @@ public class SchemaUtil {
         if (tableName == null) {
             return null;
         }
+        if (isExistingTableMappedToPhoenixName(Bytes.toString(tableName))) { return StringUtil.EMPTY_STRING; }
         int index = indexOf(tableName, QueryConstants.NAME_SEPARATOR_BYTE);
         if (index < 0) {
             index = indexOf(tableName, QueryConstants.NAMESPACE_SEPARATOR_BYTE);
@@ -635,6 +641,7 @@ public class SchemaUtil {
         if (tableName == null) {
             return null;
         }
+        if (isExistingTableMappedToPhoenixName(Bytes.toString(tableName))) { return Bytes.toString(tableName); }
         int index = indexOf(tableName, QueryConstants.NAME_SEPARATOR_BYTE);
         if (index < 0) {
             index = indexOf(tableName, QueryConstants.NAMESPACE_SEPARATOR_BYTE);
@@ -644,7 +651,9 @@ public class SchemaUtil {
     }
 
     public static String getTableNameFromFullName(String tableName) {
-        if (tableName.contains(":")) { return getTableNameFromFullName(tableName, QueryConstants.NAMESPACE_SEPARATOR); }
+        if (isExistingTableMappedToPhoenixName(tableName)) { return tableName; }
+        if (tableName.contains(QueryConstants.NAMESPACE_SEPARATOR)) { return getTableNameFromFullName(tableName,
+                QueryConstants.NAMESPACE_SEPARATOR); }
         return getTableNameFromFullName(tableName, QueryConstants.NAME_SEPARATOR);
     }
 
@@ -1015,5 +1024,21 @@ public class SchemaUtil {
     private static String getStrippedName(String physicalTableName, String indexPrefix) {
         return physicalTableName.indexOf(indexPrefix) == 0 ? physicalTableName.substring(indexPrefix.length())
                 : physicalTableName;
+    }
+
+    /**
+     * Calculate the HBase HTable name.
+     *
+     * @param schemaName import schema name, can be null
+     * @param tableName import table name
+     * @return the byte representation of the HTable
+     */
+    public static String getQualifiedTableName(String schemaName, String tableName) {
+        if (schemaName != null) {
+            return String.format("%s.%s", normalizeIdentifier(schemaName),
+                    normalizeIdentifier(tableName));
+        } else {
+            return normalizeIdentifier(tableName);
+        }
     }
 }

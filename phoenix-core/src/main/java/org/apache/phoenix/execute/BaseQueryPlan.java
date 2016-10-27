@@ -236,6 +236,12 @@ public abstract class BaseQueryPlan implements QueryPlan {
         
         if (OrderBy.REV_ROW_KEY_ORDER_BY.equals(orderBy)) {
             ScanUtil.setReversed(scan);
+            // Hack for working around PHOENIX-3121 and HBASE-16296.
+            // TODO: remove once PHOENIX-3121 and/or HBASE-16296 are fixed.
+            int scannerCacheSize = context.getStatement().getFetchSize();
+            if (limit != null && limit % scannerCacheSize == 0) {
+                scan.setCaching(scannerCacheSize + 1);
+            }
         }
         
         if (statement.getHint().hasHint(Hint.SMALL)) {
@@ -278,8 +284,8 @@ public abstract class BaseQueryPlan implements QueryPlan {
             tenantIdBytes = connection.getTenantId() == null ? null :
                     ScanUtil.getTenantIdBytes(
                             table.getRowKeySchema(),
-                            table.getBucketNum()!=null,
-                            connection.getTenantId());
+                            table.getBucketNum() != null,
+                            connection.getTenantId(), table.getViewIndexId() != null);
         } else {
             tenantIdBytes = connection.getTenantId() == null ? null : connection.getTenantId().getBytes();
         }

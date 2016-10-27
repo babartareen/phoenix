@@ -17,25 +17,17 @@
  */
 package org.apache.phoenix.util;
 
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.COLUMN_FAMILY;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.LINK_TYPE;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SYSTEM_CATALOG_SCHEMA;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SYSTEM_CATALOG_TABLE;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.TABLE_NAME;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.TABLE_SCHEM;
 import static org.apache.phoenix.util.SchemaUtil.getVarChars;
 
 import java.io.IOException;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.HTableDescriptor;
@@ -56,6 +48,7 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.phoenix.coprocessor.MetaDataProtocol;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
+import org.apache.phoenix.hbase.index.util.IndexManagementUtil;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.hbase.index.util.VersionUtil;
 import org.apache.phoenix.jdbc.PhoenixConnection;
@@ -63,12 +56,14 @@ import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PName;
+import org.apache.phoenix.schema.PNameFactory;
 import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.schema.PTable.LinkType;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.SequenceKey;
 import org.apache.phoenix.schema.SortOrder;
 import org.apache.phoenix.schema.TableNotFoundException;
+import org.apache.phoenix.schema.TableProperty;
 import org.apache.phoenix.schema.types.PBoolean;
 import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.schema.types.PLong;
@@ -88,7 +83,7 @@ public class MetaDataUtil {
     public static final String VIEW_INDEX_SEQUENCE_PREFIX = "_SEQ_";
     public static final String VIEW_INDEX_SEQUENCE_NAME_PREFIX = "_ID_";
     public static final byte[] VIEW_INDEX_SEQUENCE_PREFIX_BYTES = Bytes.toBytes(VIEW_INDEX_SEQUENCE_PREFIX);
-    public static final String VIEW_INDEX_ID_COLUMN_NAME = "_INDEX_ID";
+    private static final String VIEW_INDEX_ID_COLUMN_NAME = "_INDEX_ID";
     public static final String PARENT_TABLE_KEY = "PARENT_TABLE";
     public static final byte[] PARENT_TABLE_KEY_BYTES = Bytes.toBytes("PARENT_TABLE");
     
@@ -114,7 +109,7 @@ public class MetaDataUtil {
     // The second byte in int would be the major version, 3rd byte minor version, and 4th byte 
     // patch version.
     public static int decodePhoenixVersion(long version) {
-        return (int) ((version << Byte.SIZE * 3) >>> Byte.SIZE * 4);
+        return (int) ((version << Byte.SIZE * 4) >>> Byte.SIZE * 5);
     }
     
     // TODO: generalize this to use two bytes to return a SQL error code instead
@@ -142,18 +137,43 @@ public class MetaDataUtil {
         int patch = version & 0xFF;
         return major + "." + minor + "." + patch;
     }
-
-    public static int encodePhoenixVersion() {
-        return VersionUtil.encodeVersion(MetaDataProtocol.PHOENIX_MAJOR_VERSION, MetaDataProtocol.PHOENIX_MINOR_VERSION,
-                MetaDataProtocol.PHOENIX_PATCH_NUMBER);
+    
+    // Given the encoded integer representing the phoenix version in the encoded version value.
+    // The second byte in int would be the major version, 3rd byte minor version, and 4th byte
+    // patch version.
+    public static boolean decodeTableNamespaceMappingEnabled(long version) {
+        return ((int)((version << Byte.SIZE * 3) >>> Byte.SIZE * 7) & 0x1) != 0;
     }
 
-    public static long encodeHBaseAndPhoenixVersions(String hbaseVersion) {
-        return (((long) VersionUtil.encodeVersion(hbaseVersion)) << (Byte.SIZE * 5)) |
-                (((long) VersionUtil.encodeVersion(MetaDataProtocol.PHOENIX_MAJOR_VERSION, MetaDataProtocol.PHOENIX_MINOR_VERSION,
-                        MetaDataProtocol.PHOENIX_PATCH_NUMBER)) << (Byte.SIZE * 1));
+    // The first 3 bytes of the long is used to encoding the HBase version as major.minor.patch.
+    // The next 4 bytes of the value is used to encode the Phoenix version as major.minor.patch.
+    /**
+     * Encode HBase and Phoenix version along with some server-side config information such as whether WAL codec is
+     * installed (necessary for non transactional, mutable secondar indexing), and whether systemNamespace mapping is enabled.
+     * 
+     * @param env
+     *            RegionCoprocessorEnvironment to access HBase version and Configuration.
+     * @return long value sent back during initialization of a cluster connection.
+     */
+    public static long encodeVersion(String hbaseVersionStr, Configuration config) {
+        long hbaseVersion = VersionUtil.encodeVersion(hbaseVersionStr);
+        long isTableNamespaceMappingEnabled = SchemaUtil.isNamespaceMappingEnabled(PTableType.TABLE,
+                new ReadOnlyProps(config.iterator())) ? 1 : 0;
+        long phoenixVersion = VersionUtil.encodeVersion(MetaDataProtocol.PHOENIX_MAJOR_VERSION,
+                MetaDataProtocol.PHOENIX_MINOR_VERSION, MetaDataProtocol.PHOENIX_PATCH_NUMBER);
+        long walCodec = IndexManagementUtil.isWALEditCodecSet(config) ? 0 : 1;
+        long version =
+        // Encode HBase major, minor, patch version
+        (hbaseVersion << (Byte.SIZE * 5))
+                // Encode if systemMappingEnabled are enabled on the server side
+                | (isTableNamespaceMappingEnabled << (Byte.SIZE * 4))
+                // Encode Phoenix major, minor, patch version
+                | (phoenixVersion << (Byte.SIZE * 1))
+                // Encode whether or not non transactional, mutable secondary indexing was configured properly.
+                | walCodec;
+        return version;
     }
-
+    
     public static void getTenantIdAndSchemaAndTableName(List<Mutation> tableMetadata, byte[][] rowKeyMetaData) {
         Mutation m = getTableHeaderRow(tableMetadata);
         getVarChars(m.getRow(), 3, rowKeyMetaData);
@@ -360,18 +380,25 @@ public class MetaDataUtil {
         }
     }
 
-    public static String getViewIndexSchemaName(PName physicalName) {
-        return VIEW_INDEX_SEQUENCE_PREFIX + physicalName.getString();
+    public static String getViewIndexSequenceSchemaName(PName physicalName, boolean isNamespaceMapped) {
+        if (!isNamespaceMapped) { return VIEW_INDEX_SEQUENCE_PREFIX + physicalName.getString(); }
+        return SchemaUtil.getSchemaNameFromFullName(physicalName.toString());
     }
- 
-    public static SequenceKey getViewIndexSequenceKey(String tenantId, PName physicalName, int nSaltBuckets) {
+
+    public static String getViewIndexSequenceName(PName physicalName, PName tenantId, boolean isNamespaceMapped) {
+        if (!isNamespaceMapped) { return VIEW_INDEX_SEQUENCE_NAME_PREFIX + (tenantId == null ? "" : tenantId); }
+        return SchemaUtil.getTableNameFromFullName(physicalName.toString()) + VIEW_INDEX_SEQUENCE_NAME_PREFIX;
+    }
+
+    public static SequenceKey getViewIndexSequenceKey(String tenantId, PName physicalName, int nSaltBuckets,
+            boolean isNamespaceMapped) {
         // Create global sequence of the form: <prefixed base table name><tenant id>
         // rather than tenant-specific sequence, as it makes it much easier
         // to cleanup when the physical table is dropped, as we can delete
         // all global sequences leading with <prefix> + physical name.
-        String schemaName = getViewIndexSchemaName(physicalName);
-        String tableName = VIEW_INDEX_SEQUENCE_NAME_PREFIX + (tenantId == null ? "" : tenantId);
-        return new SequenceKey(null, schemaName, tableName, nSaltBuckets);
+        String schemaName = getViewIndexSequenceSchemaName(physicalName, isNamespaceMapped);
+        String tableName = getViewIndexSequenceName(physicalName, PNameFactory.newName(tenantId), isNamespaceMapped);
+        return new SequenceKey(isNamespaceMapped ? tenantId : null, schemaName, tableName, nSaltBuckets);
     }
 
     public static PDataType getViewIndexIdDataType() {
@@ -402,21 +429,42 @@ public class MetaDataUtil {
     }
 
     public static boolean hasLocalIndexTable(PhoenixConnection connection, byte[] physicalTableName) throws SQLException {
-        byte[] physicalIndexName = MetaDataUtil.getLocalIndexPhysicalName(physicalTableName);
         try {
-            HTableDescriptor desc = connection.getQueryServices().getTableDescriptor(physicalIndexName);
-            return desc != null && Boolean.TRUE.equals(PBoolean.INSTANCE.toObject(desc.getValue(IS_LOCAL_INDEX_TABLE_PROP_BYTES)));
+            HTableDescriptor desc = connection.getQueryServices().getTableDescriptor(physicalTableName);
+            if(desc == null ) return false;
+            return hasLocalIndexColumnFamily(desc);
         } catch (TableNotFoundException e) {
             return false;
         }
     }
 
-    public static void deleteViewIndexSequences(PhoenixConnection connection, PName name) throws SQLException {
-        String schemaName = getViewIndexSchemaName(name);
-        connection.createStatement().executeUpdate("DELETE FROM " + PhoenixDatabaseMetaData.SYSTEM_SEQUENCE + 
-                " WHERE " + PhoenixDatabaseMetaData.TENANT_ID + " IS NULL AND " + 
-                PhoenixDatabaseMetaData.SEQUENCE_SCHEMA + " = '" + schemaName + "'");
-        
+    public static boolean hasLocalIndexColumnFamily(HTableDescriptor desc) {
+        for (HColumnDescriptor cf : desc.getColumnFamilies()) {
+            if (cf.getNameAsString().startsWith(QueryConstants.LOCAL_INDEX_COLUMN_FAMILY_PREFIX)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static List<byte[]> getNonLocalIndexColumnFamilies(HTableDescriptor desc) {
+       List<byte[]> families = new ArrayList<byte[]>(desc.getColumnFamilies().length);
+        for (HColumnDescriptor cf : desc.getColumnFamilies()) {
+            if (!cf.getNameAsString().startsWith(QueryConstants.LOCAL_INDEX_COLUMN_FAMILY_PREFIX)) {
+               families.add(cf.getName());
+            }
+        }
+       return families;
+    }
+
+    public static void deleteViewIndexSequences(PhoenixConnection connection, PName name, boolean isNamespaceMapped)
+            throws SQLException {
+        String schemaName = getViewIndexSequenceSchemaName(name, isNamespaceMapped);
+        String sequenceName = getViewIndexSequenceName(name, null, isNamespaceMapped);
+        connection.createStatement().executeUpdate("DELETE FROM " + PhoenixDatabaseMetaData.SYSTEM_SEQUENCE + " WHERE "
+                + PhoenixDatabaseMetaData.SEQUENCE_SCHEMA
+                + (schemaName.length() > 0 ? "='" + schemaName + "'" : " IS NULL") + (isNamespaceMapped
+                        ? " AND " + PhoenixDatabaseMetaData.SEQUENCE_NAME + " = '" + sequenceName + "'" : ""));
     }
     
     /**
@@ -474,9 +522,7 @@ public class MetaDataUtil {
     public static final String IS_LOCAL_INDEX_TABLE_PROP_NAME = "IS_LOCAL_INDEX_TABLE";
     public static final byte[] IS_LOCAL_INDEX_TABLE_PROP_BYTES = Bytes.toBytes(IS_LOCAL_INDEX_TABLE_PROP_NAME);
 
-    private static final String GET_VIEWS_QUERY = "SELECT " + TABLE_SCHEM + "," + TABLE_NAME + " FROM "
-            + SYSTEM_CATALOG_SCHEMA + "." + SYSTEM_CATALOG_TABLE + " WHERE " + COLUMN_FAMILY + " = ? AND " + LINK_TYPE
-            + " = " + LinkType.PHYSICAL_TABLE.getSerializedValue();
+
 
     public static Scan newTableRowsScan(byte[] key, long startTimeStamp, long stopTimeStamp){
         return newTableRowsScan(key, null, startTimeStamp, stopTimeStamp);
@@ -521,19 +567,8 @@ public class MetaDataUtil {
         }
     }
 
-    public static Set<String> getViewNames(PhoenixConnection conn, String table) throws SQLException {
-        Set<String> viewNames = new HashSet<String>();
-        PreparedStatement preparedStatment = conn.prepareStatement(GET_VIEWS_QUERY);
-        preparedStatment.setString(1, SchemaUtil.normalizeIdentifier(table));
-        ResultSet rs = preparedStatment.executeQuery();
-        while (rs.next()) {
-            viewNames.add(SchemaUtil.getTableName(rs.getString(1), rs.getString(2)));
-        }
-        return viewNames;
-    }
-
     public static String getAutoPartitionColumnName(PTable parentTable) {
-        List<PColumn> parentTableColumns = parentTable.getColumns();
+        List<PColumn> parentTableColumns = parentTable.getPKColumns();
         PColumn column = parentTableColumns.get(getAutoPartitionColIndex(parentTable));
         return column.getName().getString();
     }
@@ -554,5 +589,13 @@ public class MetaDataUtil {
         return PhoenixRuntime.JDBC_PROTOCOL + PhoenixRuntime.JDBC_PROTOCOL_SEPARATOR + zkQuorum
             + PhoenixRuntime.JDBC_PROTOCOL_SEPARATOR + zkClientPort
             + PhoenixRuntime.JDBC_PROTOCOL_SEPARATOR + zkParentNode;
+    }
+
+    public static boolean isHColumnProperty(String propName) {
+        return HColumnDescriptor.getDefaultValues().containsKey(propName);
+    }
+
+    public static boolean isHTableProperty(String propName) {
+        return !isHColumnProperty(propName) && !TableProperty.isPhoenixTableProperty(propName);
     }
 }

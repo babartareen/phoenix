@@ -22,6 +22,7 @@ import java.util.Map.Entry;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
+import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.KeyValue.Type;
 import org.apache.hadoop.hbase.KeyValueUtil;
@@ -84,6 +85,23 @@ public class LocalIndexStoreFileScanner extends StoreFileScanner{
         return changedKv;
     }
 
+    /**
+     * Enforce seek all the time for local index store file scanner otherwise some times hbase
+     * might return fake kvs not in physical files.
+     */
+    @Override
+    public boolean requestSeek(Cell kv, boolean forward, boolean useBloom) throws IOException {
+        boolean requestSeek = super.requestSeek(kv, forward, useBloom);
+        if(requestSeek) {
+            Cell peek = super.peek();
+            if (Bytes.compareTo(kv.getRowArray(), kv.getRowOffset(), kv.getRowLength(),
+                peek.getRowArray(), peek.getRowOffset(), peek.getRowLength()) == 0) {
+                return forward ? reseek(kv): seek(kv);
+            }
+        }
+        return requestSeek;
+    }
+
     @Override
     public boolean seek(Cell key) throws IOException {
         return seekOrReseek(key, true);
@@ -141,13 +159,6 @@ public class LocalIndexStoreFileScanner extends StoreFileScanner{
     }
 
     private boolean isSatisfiedMidKeyCondition(Cell kv) {
-        if (CellUtil.isDelete(kv) && kv.getValueLength() == 0) {
-            // In case of a Delete type KV, let it be going to both the daughter regions.
-            // No problems in doing so. In the correct daughter region where it belongs to, this delete
-            // tomb will really delete a KV. In the other it will just hang around there with no actual
-            // kv coming for which this is a delete tomb. :)
-            return true;
-        }
         ImmutableBytesWritable rowKey =
                 new ImmutableBytesWritable(kv.getRowArray(), kv.getRowOffset() + reader.getOffset(),
                         kv.getRowLength() - reader.getOffset());
@@ -155,15 +166,18 @@ public class LocalIndexStoreFileScanner extends StoreFileScanner{
         IndexMaintainer indexMaintainer = entry.getValue();
         byte[] viewIndexId = indexMaintainer.getViewIndexIdFromIndexRowKey(rowKey);
         IndexMaintainer actualIndexMaintainer = reader.getIndexMaintainers().get(new ImmutableBytesWritable(viewIndexId));
-        byte[] dataRowKey = actualIndexMaintainer.buildDataRowKey(rowKey, reader.getViewConstants());
-        int compareResult = Bytes.compareTo(dataRowKey, reader.getSplitRow());
-        if (reader.isTop()) {
-            if (compareResult >= 0) {
-                return true;
-            }
-        } else {
-            if (compareResult < 0) {
-                return true;
+        if(actualIndexMaintainer != null) {
+            byte[] dataRowKey = actualIndexMaintainer.buildDataRowKey(rowKey, reader.getViewConstants());
+
+            int compareResult = Bytes.compareTo(dataRowKey, reader.getSplitRow());
+            if (reader.isTop()) {
+                if (compareResult >= 0) {
+                    return true;
+                }
+            } else {
+                if (compareResult < 0) {
+                    return true;
+                }
             }
         }
         return false;
